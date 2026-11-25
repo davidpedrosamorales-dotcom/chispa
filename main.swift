@@ -887,7 +887,8 @@ final class WidgetModel: ObservableObject {
     @Published var prompt = ""
     @Published var hideResults = false     // plegadas cuando no cabe todo en la pantalla
     @Published var hideUsage = false
-    var usageEnabled = false   // «Lo que te queda de Claude» (experimental, se activa en el menú)
+    @Published var usageEnabled = false   // «Lo que te queda de Claude»: hasta activarlo se ve una invitación
+    var onEnableUsage: (() -> Void)?
     @Published var usagePick: String? = nil   // anillo pulsado: se explica debajo
     @Published var picking = false         // selector de proyecto abierto
     @Published var projects: [ProjectVM] = []
@@ -1873,6 +1874,32 @@ struct WidgetUI: View {
     }
 
     var usage: some View {
+        Group { if model.usageEnabled { usageRings } else { usageInvite } }
+    }
+
+    /// Antes de activarlo: qué es y un botón. Nada se lee del Llavero hasta que se pulsa.
+    var usageInvite: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 9) {
+                SectionLabel(text: "TE QUEDA DE CLAUDE")
+                HStack(spacing: 10) {
+                    Text("Cuánto te queda de la sesión y de la semana, y si a tu ritmo te llega.")
+                        .font(.system(size: 11)).foregroundColor(.white.opacity(0.62))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    Button(action: { model.onEnableUsage?() }) {
+                        Text("Activar").font(.system(size: 11.5, weight: .semibold)).foregroundColor(.white)
+                            .padding(.horizontal, 13).frame(height: 28)
+                            .background(Capsule().fill(uiAccent))
+                    }
+                    .buttonStyle(PressStyle())
+                    .help("Te explicará qué hace antes de activarlo")
+                }
+            }
+        }
+    }
+
+    var usageRings: some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
                 SectionLabel(text: "TE QUEDA DE CLAUDE")
@@ -2269,11 +2296,11 @@ class WidgetView: NSView {
             .sorted { (order[$0.state]!, $1.date) < (order[$1.state]!, $0.date) }
         // Que quepa en la pantalla: si no hay sitio, primero se pliegan tarjetas y luego se muestran menos agentes
         let apps = model.showApps && !model.presentation
-        var maxR = min(4, max(1, list.count)), hideR = false, hideU = !model.usageEnabled
+        var maxR = min(4, max(1, list.count)), hideR = false, hideU = false
         func est() -> CGFloat {
             let shownN = min(list.count, maxR)
             return 125 + CGFloat(shownN) * 67 + (list.count > maxR ? 22 : 0) + 44 + 40
-                + (hideR ? 0 : 180) + (hideU ? 0 : 180 + (model.usagePick != nil ? 40 : 0)) + (apps ? 315 : 130) + 12
+                + (hideR ? 0 : 180) + (hideU ? 0 : !model.usageEnabled ? 100 : 180 + (model.usagePick != nil ? 40 : 0)) + (apps ? 315 : 130) + 12
         }
         var steps: [() -> Void] = []
         if apps { steps.append { hideR = true } }
@@ -2581,6 +2608,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         usageItem.state = showUsage ? .on : .off
         menu.insertItem(usageItem, at: 4)
         view.model.usageEnabled = showUsage
+        view.model.onEnableUsage = { [weak self] in self?.toggleUsage() }
         menu.insertItem(privateItem, at: 3)
         menu.insertItem(.separator(), at: 4)
         panel.setFrame(targetFrame(), display: false)
@@ -3197,7 +3225,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine
     m.week = WorkStats(tasks: 184, seconds: 19620, projects: 7)
     m.perDay = [5, 11, 23, 20, 1, 65, 59]
     m.statsLoaded = true
-    m.usageEnabled = true
+    m.usageEnabled = scenario != "sinuso"
     if scenario == "uso" { m.usagePick = "s" }
     m.usage = [UsageVM(id: "s", label: "Sesión", left: 0.57, detail: "en 34 min", tip: scenario == "uso" ? "Te queda el 57 % de la sesión (5 h). Se reinicia el mié 25 a las 6:10" : "", timeLeft: 0.11),
                UsageVM(id: "w", label: "Semana", left: 0.81, detail: "en 5 d", tip: "", timeLeft: 0.71),

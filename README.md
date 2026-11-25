@@ -52,8 +52,8 @@ Todo lo demás está en el menú del **clic derecho** sobre el widget.
 ## Privacidad
 
 - Chispa lee los registros que Claude Code guarda en tu Mac (`~/.claude/projects`) para contar tareas y tiempo. **Nada sale de tu ordenador.**
-- El informe semanal se genera en local, en `~/Documents/Informes Claude`. Lleva tu nombre y los nombres de tus proyectos: revísalo antes de compartirlo (puedes editar el texto y quitar proyectos).
-- **Opcional y apagado por defecto**: «Mostrar lo que te queda de Claude (experimental)». Si lo activas, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa **Permitir**, no «Permitir siempre», para que ningún otro programa pueda leerla sin preguntarte) para preguntar a Anthropic cuánto uso te queda. Usa una función no documentada, así que puede dejar de funcionar en cualquier momento.
+- El informe semanal se genera en local, en `~/Documents/Informes Claude`. Lleva tu nombre, los nombres de tus proyectos y, si usas la app CapturasClip, las capturas que tengas fijadas en ella: revísalo antes de compartirlo (puedes editar el texto y quitar proyectos).
+- **Opcional**: la zona «Te queda de Claude» aparece desde el principio, pero no lee nada hasta que pulsas **Activar** (o lo eliges en el menú del clic derecho). Si lo activas, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa **Permitir**, no «Permitir siempre», para que ningún otro programa pueda leerla sin preguntarte) para preguntar a Anthropic cuánto uso te queda. Usa una función no documentada, así que puede dejar de funcionar en cualquier momento.
 
 ## Desinstalar
 
@@ -82,5 +82,5 @@ Chispa is a macOS desktop widget for **Claude Code**. It shows each running agen
 - **Requires** macOS 15+ and Claude Code. Jumping to an agent's tab needs macOS Terminal.
 - **Install**: download `Chispa.zip` from Releases, move `Chispa.app` to Applications, and on first launch allow it in *System Settings › Privacy & Security › Open Anyway* (the app is not notarized). Or build it yourself with `./build.sh`.
 - **First run**: it asks before adding hooks to `~/.claude/settings.json` and keeps a backup (`settings.json.antes-chispa`).
-- **Privacy**: everything stays on your Mac. The optional, off-by-default "remaining usage" rings read Claude Code's login from the Keychain and query an undocumented Anthropic endpoint; they may stop working at any time.
+- **Privacy**: everything stays on your Mac. The optional "remaining usage" rings (shown with an *Activate* button until you turn them on) read Claude Code's login from the Keychain and query an undocumented Anthropic endpoint; they may stop working at any time.
 - Made by [davidpedrosamorales-dotcom](https://github.com/davidpedrosamorales-dotcom). Not affiliated with Anthropic. MIT licensed.
