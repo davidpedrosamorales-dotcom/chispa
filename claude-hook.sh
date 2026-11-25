@@ -4,8 +4,8 @@
 # Archivo de estado (una línea por dato): estado · carpeta · terminal · actividad · inicio · pasos · fin
 dir="$HOME/Library/Caches/local.chispa/claude"
 input=$(cat)
-# Primer valor de texto de una clave del JSON
-field() { printf '%s' "$input" | grep -o "\"$1\"[[:space:]]*:[[:space:]]*\"[^\"\\\\]*" | head -1 | sed 's/^[^:]*:[[:space:]]*"//' }
+# Valor de texto del JSON por su ruta (p. ej. tool_input.file_path). plutil entiende JSON y respeta las comillas escapadas.
+field() { printf '%s' "$input" | /usr/bin/plutil -extract "$1" raw -o - - 2>/dev/null | head -1 }
 sid=$(field session_id)
 [[ -z "$sid" ]] && exit 0
 file="$dir/$sid"
@@ -43,12 +43,12 @@ case "$1" in
       steps=$((steps + 1))
       tool=$(field tool_name)
       case "$tool" in
-        Edit|MultiEdit|Write|NotebookEdit) f=$(field file_path); activity="Edición · ${f:t}" ;;
-        Read)            f=$(field file_path); activity="Lectura · ${f:t}" ;;
-        Bash)            d=$(field description); activity="${d:-Ejecutando un comando}" ;;
+        Edit|MultiEdit|Write|NotebookEdit) f=$(field tool_input.file_path); activity="Edición · ${f:t}" ;;
+        Read)            f=$(field tool_input.file_path); activity="Lectura · ${f:t}" ;;
+        Bash)            d=$(field tool_input.description); activity="${d:-Ejecutando un comando}" ;;
         Grep|Glob)       activity="Buscando en el código" ;;
         WebSearch|WebFetch) activity="Consultando la web" ;;
-        Agent|Task)      d=$(field description); activity="Subagente · ${d:-en marcha}" ;;
+        Agent|Task)      d=$(field tool_input.description); activity="Subagente · ${d:-en marcha}" ;;
         mcp__*)          s=${tool#mcp__}; activity="Herramienta · ${s%%__*}" ;;
         "")              ;;
         *)               activity="$tool" ;;
