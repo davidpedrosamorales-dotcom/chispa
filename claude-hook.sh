@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Hook de Claude Code -> estado para el widget Chispa
 # Uso: claude-hook.sh working|done|attention|end   (JSON del hook por stdin)
-# Archivo de estado (una línea por dato): estado · carpeta · terminal · actividad · inicio · pasos · fin
+# Archivo de estado (una línea por dato): estado · carpeta · terminal · actividad · inicio · pasos · fin · app
 dir="$HOME/Library/Caches/local.chispa/claude"
 input=$(cat)
 # Valor de texto del JSON por su ruta (p. ej. tool_input.file_path). plutil entiende JSON y respeta las comillas escapadas.
@@ -20,6 +20,9 @@ if [[ -f "$file" ]]; then
   prev=("${(@f)old}")
 fi
 cwd=$(field cwd); [[ -z "$cwd" ]] && cwd="${prev[2]}"
+# App en la que corre Claude (Terminal, iTerm, VS Code…): macOS la deja en __CFBundleIdentifier
+app="${prev[8]:-${__CFBundleIdentifier:-}}"
+[[ "$app" == [A-Za-z0-9.-]## ]] || app=""
 activity="${prev[4]}"; start="${prev[5]}"; steps="${prev[6]:-0}"; fin=""
 now=$(date +%s)
 
@@ -62,5 +65,5 @@ esac
 activity=${activity[1,70]}
 
 mkdir -p "$dir"
-printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$1" "$cwd" "$tty" "$activity" "$start" "$steps" "$fin" > "$file"
+printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$1" "$cwd" "$tty" "$activity" "$start" "$steps" "$fin" "$app" > "$file"
 exit 0

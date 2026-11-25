@@ -6,6 +6,27 @@ import ServiceManagement
 import UserNotifications
 
 let home = FileManager.default.homeDirectoryForCurrentUser
+
+// MARK: - Idioma: español si el Mac está en español (o catalán, gallego, euskera); si no, inglés
+let uiSpanish: Bool = {
+    if let forced = UserDefaults.standard.string(forKey: "language") { return forced.hasPrefix("es") }
+    let l = Locale.preferredLanguages.first ?? "es"
+    return ["es", "ca", "gl", "eu"].contains { l.hasPrefix($0) }
+}()
+/// Texto en el idioma del Mac.
+func T(_ es: String, _ en: String) -> String { uiSpanish ? es : en }
+let uiLocale = Locale(identifier: uiSpanish ? "es_ES" : "en_US")
+
+/// Lo que escribe el script de avisos (en español) pasado al idioma del Mac.
+func trActivity(_ a: String) -> String {
+    guard !uiSpanish else { return a }
+    let pairs = [("Edición · ", "Editing · "), ("Lectura · ", "Reading · "), ("Subagente · en marcha", "Subagent · running"),
+                 ("Subagente · ", "Subagent · "), ("Herramienta · ", "Tool · ")]
+    for (es, en) in pairs where a.hasPrefix(es) { return en + a.dropFirst(es.count) }
+    let whole = ["Pensando…": "Thinking…", "Ejecutando un comando": "Running a command", "Buscando en el código": "Searching the code",
+                 "Consultando la web": "Browsing the web", T("Listo para revisar", "Ready for review"): "Ready for review", T("Espera tu permiso", "Waiting for your permission"): "Waiting for your permission"]
+    return whole[a] ?? a
+}
 let cacheDir = home.appendingPathComponent("Library/Caches/local.chispa")
 let claudeStateDir = cacheDir.appendingPathComponent("claude")
 /// Carpeta donde viven los proyectos. Se elige en el menú; si no, ~/Documents/Proyectos Claude.
@@ -162,8 +183,8 @@ func readTopApps(_ n: Int) -> [(name: String, bytes: UInt64, app: String?)] {
             name = (path as NSString).lastPathComponent
         }
         if name == "claude" || path.contains("/claude/versions/") { name = "Claude Code" }
-        else if name.hasPrefix("com.apple.Virtualization") { name = "Máquina virtual"; bundle = nil }
-        else if name == "MTLCompilerService" { name = "Gráficos del sistema" }
+        else if name.hasPrefix("com.apple.Virtualization") { name = T("Máquina virtual", "Virtual machine"); bundle = nil }
+        else if name == "MTLCompilerService" { name = T("Gráficos del sistema", "System graphics") }
         else if name == "node" { name = "Node.js" }
         totals[name, default: 0] += info.ri_phys_footprint
         if let bundle, bundles[name] == nil { bundles[name] = bundle }
@@ -225,7 +246,7 @@ func fetchClaudeUsage(_ done: @escaping ([String: UsageLimit]?) -> Void) {
 func shortUntil(_ d: Date?) -> String {
     guard let d else { return "" }
     let s = max(0, Int(d.timeIntervalSinceNow))
-    return s >= 86400 ? "\(s / 86400) d" : s >= 3600 ? "\(s / 3600) h" : "\(max(1, s / 60)) min"
+    return s >= 86400 ? T("\(s / 86400) d", "\(s / 86400) d") : s >= 3600 ? "\(s / 3600) h" : "\(max(1, s / 60)) min"
 }
 
 // MARK: - Notificaciones
@@ -290,6 +311,7 @@ func launchClaude(in dir: URL, continueLast: Bool, prompt: String? = nil) {
 // MARK: - Claude: estado (escrito por los hooks de Claude Code)
 struct ClaudeSession { let id: String; let state: String; let cwd: String; let date: Date; var tty = ""
     var activity = ""; var start: Date?; var steps = 0; var end: Date?
+    var app = ""      // bundle id de la app donde corre (com.apple.Terminal, com.googlecode.iterm2, com.microsoft.VSCode…)
     var project: String { cwd.isEmpty ? "Claude" : (cwd as NSString).lastPathComponent }
 }
 
@@ -310,7 +332,8 @@ func readClaudeSessions() -> [ClaudeSession] {
         out.append(ClaudeSession(id: f.lastPathComponent, state: state, cwd: lines.count > 1 ? lines[1] : "", date: date,
                                  tty: lines.count > 2 ? lines[2].trimmingCharacters(in: .whitespaces) : "",
                                  activity: lines.count > 3 ? lines[3] : "", start: epoch(4),
-                                 steps: lines.count > 5 ? Int(lines[5]) ?? 0 : 0, end: epoch(6)))
+                                 steps: lines.count > 5 ? Int(lines[5]) ?? 0 : 0, end: epoch(6),
+                                 app: lines.count > 7 ? lines[7].trimmingCharacters(in: .whitespaces) : ""))
     }
     return out
 }
@@ -336,6 +359,81 @@ func focusTerminalTab(tty: String) -> Bool {
     var err: NSDictionary?
     let r = NSAppleScript(source: src)?.executeAndReturnError(&err)
     return err == nil && r?.booleanValue == true
+}
+
+/// Lo mismo en iTerm2: selecciona la ventana, la pestaña y el panel de ese tty.
+func focusITermSession(tty: String) -> Bool {
+    guard tty.hasPrefix("ttys"), tty.allSatisfy({ $0.isLetter || $0.isNumber }) else { return false }
+    let src = """
+    tell application id "com.googlecode.iterm2"
+        repeat with w in windows
+            repeat with t in tabs of w
+                repeat with s in sessions of t
+                    if tty of s is "/dev/\(tty)" then
+                        select w
+                        tell t to select
+                        tell s to select
+                        activate
+                        return true
+                    end if
+                end repeat
+            end repeat
+        end repeat
+    end tell
+    return false
+    """
+    var err: NSDictionary?
+    let r = NSAppleScript(source: src)?.executeAndReturnError(&err)
+    return err == nil && r?.booleanValue == true
+}
+
+// MARK: - Versiones nuevas (GitHub)
+let chispaRepo = "davidpedrosamorales-dotcom/chispa"
+var chispaVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
+
+/// "2.10" > "2.9": compara número a número.
+func isNewer(_ a: String, than b: String) -> Bool {
+    let x = a.split(separator: ".").map { Int($0) ?? 0 }, y = b.split(separator: ".").map { Int($0) ?? 0 }
+    for i in 0..<max(x.count, y.count) {
+        let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0
+        if p != q { return p > q }
+    }
+    return false
+}
+
+/// Pregunta a GitHub cuál es la última versión publicada (sin enviar ningún dato tuyo).
+func fetchLatestVersion(_ done: @escaping (String?) -> Void) {
+    var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(chispaRepo)/releases/latest")!, timeoutInterval: 15)
+    req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+    req.setValue("Chispa", forHTTPHeaderField: "User-Agent")
+    URLSession.shared.dataTask(with: req) { data, resp, _ in
+        var v: String?
+        if (resp as? HTTPURLResponse)?.statusCode == 200, let data,
+           let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let tag = j["tag_name"] as? String {
+            let t = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            if t.allSatisfy({ $0.isNumber || $0 == "." }) { v = t }
+        }
+        DispatchQueue.main.async { done(v) }
+    }.resume()
+}
+
+/// Lleva al agente esté donde esté: pestaña exacta en Terminal e iTerm, su carpeta en VS Code/Cursor, la app en el resto.
+func focusAgent(_ s: ClaudeSession) -> Bool {
+    let app = s.app
+    if app.isEmpty || app == "com.apple.Terminal" { return focusTerminalTab(tty: s.tty) }
+    if app == "com.googlecode.iterm2" { return focusITermSession(tty: s.tty) }
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: app) else { return false }
+    let editors = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92", "com.vscodium", "com.exafunction.windsurf"]
+    if editors.contains(app), !s.cwd.isEmpty, isDir(URL(fileURLWithPath: s.cwd)) {
+        // Abrir la carpeta trae al frente la ventana de ese proyecto
+        NSWorkspace.shared.open([URL(fileURLWithPath: s.cwd)], withApplicationAt: url, configuration: NSWorkspace.OpenConfiguration())
+        return true
+    }
+    if let running = NSRunningApplication.runningApplications(withBundleIdentifier: app).first {
+        return running.activate()
+    }
+    NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+    return true
 }
 
 func clearDoneSessions() {
@@ -506,17 +604,63 @@ func pinnedShotsHTML() -> String {
               let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true,
                     kCGImageSourceThumbnailMaxPixelSize: 1400, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary),
               let jpg = NSBitmapImageRep(cgImage: cg).representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else { continue }
-        out += "<figure><img src=\"data:image/jpeg;base64,\(jpg.base64EncodedString())\"><figcaption contenteditable>Escribe un pie para esta captura</figcaption></figure>\n"
+        out += "<figure><img src=\"data:image/jpeg;base64,\(jpg.base64EncodedString())\"><figcaption contenteditable>\(T("Escribe un pie para esta captura", "Write a caption for this screenshot"))</figcaption></figure>\n"
     }
     return out
+}
+
+/// El informe en inglés: mismo HTML, textos cambiados (frases largas primero).
+func translateReport(_ html: String) -> String {
+    let pairs: [(String, String)] = [
+        ("<html lang=\"es\">", "<html lang=\"en\">"),
+        ("Informe semanal · trabajo con IA", "Weekly report · work with AI"),
+        ("<title>Informe semanal · ", "<title>Weekly report · "),
+        ("Guardar como PDF", "Save as PDF"),
+        ("Antes de compartirlo, revisa tu nombre, los proyectos y las capturas: puedes editar o quitar lo que quieras. Nada de esto sale de tu Mac.",
+         "Before sharing it, check your name, the projects and the screenshots: you can edit or remove anything. None of this leaves your Mac."),
+        ("<em>tareas resueltas</em><br>por agentes de IA en 7 días", "<em>tasks completed</em><br>by AI agents in 7 days"),
+        ("<span>de trabajo de los agentes</span>", "<span>of agent work</span>"),
+        ("<span>proyectos</span>", "<span>projects</span>"),
+        ("<span>días con actividad</span>", "<span>active days</span>"),
+        ("<span>tareas por día activo</span>", "<span>tasks per active day</span>"),
+        ("<span>de media por tarea</span>", "<span>average per task</span>"),
+        ("<h2>Tareas por día</h2>", "<h2>Tasks per day</h2>"),
+        ("<h2>Reparto del tiempo</h2>", "<h2>Where the time went</h2>"),
+        ("<h2>Cuándo trabajan los agentes</h2>", "<h2>When the agents work</h2>"),
+        ("<h2>Por proyecto</h2>", "<h2>By project</h2>"),
+        ("<p>No hay actividad registrada en los últimos 7 días.</p>", "<p>No activity in the last 7 days.</p>"),
+        ("<h2>Capturas</h2>", "<h2>Screenshots</h2>"),
+        ("Datos tomados de las sesiones de Claude Code de este Mac, sin estimaciones. «Tarea» es cada petición que el agente ha resuelto.",
+         "Data taken from this Mac's Claude Code sessions, no estimates. A “task” is each request the agent completed."),
+        ("El tiempo de los agentes no cuenta las pausas de más de 5 minutos. Los títulos de cada proyecto son los que Claude pone a cada sesión.",
+         "Agent time doesn't count pauses longer than 5 minutes. Project titles are the ones Claude gives each session."),
+        ("title=\"Quitar este proyecto del informe (las cifras se recalculan)\">Quitar</button>", "title=\"Remove this project from the report (figures are recalculated)\">Remove</button>"),
+        (" tareas · ", " tasks · "),
+        ("\" frente a la semana anterior (\"", "\" vs. the previous week (\""),
+        ("\"Hora punta: <b>de \"+hb+\" a \"+(hb+1)+\" h</b>. \"", "\"Peak hour: <b>\"+hb+\"–\"+(hb+1)+\" h</b>. \""),
+        ("\" %</b> de las tareas, fuera del horario de 9 a 19 h.\"", "\" %</b> of tasks happened outside 9 am – 7 pm.\""),
+        ("\"Todo dentro del horario de 9 a 19 h.\"", "\"Everything happened within 9 am – 7 pm.\""),
+        ("\"Mejor día\"", "\"Best day\""), ("\" tareas resueltas\"", "\" tasks completed\""),
+        ("\"Proyecto principal\"", "\"Main project\""), ("\" % del tiempo de los agentes\"", "\" % of agent time\""),
+        ("\"Ritmo\"", "\"Pace\""), ("\" tareas al día\"", "\" tasks a day\""), ("\"una cada \"", "\"one every \""),
+        ("\" de trabajo de agente\"", "\" of agent work\""),
+        ("\"En paralelo\"", "\"In parallel\""), ("\" agentes a la vez\"", "\" agents at once\""), ("\"pico de trabajo simultáneo\"", "\"peak simultaneous work\""),
+        ("\"Tarea más larga\"", "\"Longest task\""), ("\"de trabajo seguido de un agente\"", "\"of continuous agent work\""),
+        ("\"Constancia\"", "\"Streak\""), ("\" día\":\" días\")+\" seguidos\"", "\" day\":\" days\")+\" in a row\""),
+        ("\"con tareas resueltas\"", "\"with completed tasks\""),
+        ("\"Sin actividad.\"", "\"No activity.\""), ("set(\"kD\",act+\" de 7\")", "set(\"kD\",act+\" of 7\")"), ("c.title=v+\" tareas\"", "c.title=v+\" tasks\""), (">de agente<", ">of agent work<"),
+    ]
+    var h = html
+    for (es, en) in pairs { h = h.replacingOccurrences(of: es, with: en) }
+    return h
 }
 
 func buildWeeklyReport(_ sessions: [SessionReport], previousWeekTasks: Int = 0) -> String {
     let cal = Calendar.current
     let today = cal.startOfDay(for: Date())
     let days = (0..<7).map { cal.date(byAdding: .day, value: $0 - 6, to: today)! }
-    let es = Locale(identifier: "es_ES")
-    let dRange = DateFormatter(); dRange.locale = es; dRange.dateFormat = "d 'de' MMMM"
+    let es = uiLocale
+    let dRange = DateFormatter(); dRange.locale = es; dRange.dateFormat = uiSpanish ? "d 'de' MMMM" : "MMMM d"
     let dDay = DateFormatter(); dDay.locale = es; dDay.dateFormat = "d"
     let dShort = DateFormatter(); dShort.locale = es; dShort.dateFormat = "EEE d"
     let dLong = DateFormatter(); dLong.locale = es; dLong.dateFormat = "EEEE d"
@@ -538,7 +682,7 @@ func buildWeeklyReport(_ sessions: [SessionReport], previousWeekTasks: Int = 0) 
     var projs: [String: Proj] = [:]
     let home = FileManager.default.homeDirectoryForCurrentUser.path
     for s in sessions {
-        let name = s.project.isEmpty ? "Sin carpeta" : s.project == home ? "Carpeta personal" : (s.project as NSString).lastPathComponent
+        let name = s.project.isEmpty ? T("Sin carpeta", "No folder") : s.project == home ? T("Carpeta personal", "Home folder") : (s.project as NSString).lastPathComponent
         var p = projs[s.project] ?? Proj(name: name, path: s.project)
         p.tasks += s.turns.count
         p.secs += s.turns.reduce(0) { $0 + $1.seconds }
@@ -578,10 +722,12 @@ func buildWeeklyReport(_ sessions: [SessionReport], previousWeekTasks: Int = 0) 
     }
     let shots = pinnedShotsHTML()
     let sameMonth = cal.component(.month, from: days[0]) == cal.component(.month, from: days[6])
-    let range = "\(sameMonth ? dDay.string(from: days[0]) : dRange.string(from: days[0])) – \(dRange.string(from: days[6])) de \(dYear.string(from: days[6]))"
+    let range = uiSpanish
+        ? "\(sameMonth ? dDay.string(from: days[0]) : dRange.string(from: days[0])) – \(dRange.string(from: days[6])) de \(dYear.string(from: days[6]))"
+        : "\(dRange.string(from: days[0])) – \(sameMonth ? dDay.string(from: days[6]) : dRange.string(from: days[6])), \(dYear.string(from: days[6]))"
     let dayNames = days.map { "\"" + dLong.string(from: $0) + "\"" }.joined(separator: ",")
 
-    return """
+    let html = """
     <!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Informe semanal · \(range)</title>
     <style>
@@ -591,7 +737,7 @@ func buildWeeklyReport(_ sessions: [SessionReport], previousWeekTasks: Int = 0) 
       background:radial-gradient(1100px 700px at 12% -8%,rgba(240,138,102,.20),transparent 60%),radial-gradient(900px 700px at 100% 28%,rgba(124,155,255,.13),transparent 60%),radial-gradient(900px 800px at 0% 78%,rgba(79,214,150,.08),transparent 60%),var(--bg)}
     .page{max-width:940px;margin:0 auto;padding:26px 28px 70px}
     .tools{display:flex;gap:12px;align-items:center;margin-bottom:18px;color:var(--mut);font-size:13px}
-    .tools button{font:inherit;font-weight:650;color:#1a0f0b;background:linear-gradient(180deg,#ffb399,#f08a66);border:0;border-radius:999px;padding:8px 17px;cursor:pointer;box-shadow:0 6px 20px rgba(240,138,102,.35)}
+    .tools button{font:inherit;font-weight:650;white-space:nowrap;flex:none;color:#1a0f0b;background:linear-gradient(180deg,#ffb399,#f08a66);border:0;border-radius:999px;padding:8px 17px;cursor:pointer;box-shadow:0 6px 20px rgba(240,138,102,.35)}
     @keyframes up{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:none}}
     @keyframes drift{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(60px,30px) scale(1.15)}}
     @keyframes bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-5px)}}
@@ -783,6 +929,7 @@ func buildWeeklyReport(_ sessions: [SessionReport], previousWeekTasks: Int = 0) 
     </script>
     </body></html>
     """
+    return uiSpanish ? html : translateReport(html)
 }
 
 // MARK: - Utilidades de dibujo
@@ -828,7 +975,7 @@ struct UsageVM: Identifiable {
 
 func roughSpan(_ sec: Double) -> String {
     let s = Int(sec)
-    return s >= 2 * 86400 ? "\(s / 86400) días" : s >= 86400 ? "1 día" : s >= 2 * 3600 ? "\(s / 3600) h" : s >= 3600 ? "1 h" : "\(max(5, s / 300 * 5)) min"
+    return s >= 2 * 86400 ? T("\(s / 86400) días", "\(s / 86400) days") : s >= 86400 ? T("1 día", "1 day") : s >= 2 * 3600 ? "\(s / 3600) h" : s >= 3600 ? "1 h" : "\(max(5, s / 300 * 5)) min"
 }
 struct AppMem: Identifiable { let id: Int; let name: String; let bytes: UInt64; var icon: NSImage? = nil }
 
@@ -844,8 +991,8 @@ final class WidgetModel: ObservableObject {
     @Published var perDay = [Int](repeating: 0, count: 7)
     @Published var statsLoaded = false
     @Published var usage: [UsageVM] = [
-        UsageVM(id: "session", label: "Sesión", left: nil, detail: "…", tip: ""),
-        UsageVM(id: "week", label: "Semana", left: nil, detail: "…", tip: ""),
+        UsageVM(id: "session", label: T("Sesión", "Session"), left: nil, detail: "…", tip: ""),
+        UsageVM(id: "week", label: T("Semana", "Week"), left: nil, detail: "…", tip: ""),
         ]
     @Published var cpu = 0.0
     @Published var memFraction = 0.0
@@ -856,7 +1003,7 @@ final class WidgetModel: ObservableObject {
     @Published var showApps = false
     @Published var topApps: [AppMem] = []
     @Published var awake = false
-    @Published var sleepTitle = "Reposo normal"
+    @Published var sleepTitle = T("Reposo normal", "Normal sleep")
     @Published var timerOn = false
     @Published var timerMinutes = 0
     @Published var batteryText = ""
@@ -890,6 +1037,8 @@ final class WidgetModel: ObservableObject {
     @Published var usageEnabled = false   // «Lo que te queda de Claude»: hasta activarlo se ve una invitación
     var onEnableUsage: (() -> Void)?
     @Published var usagePick: String? = nil   // anillo pulsado: se explica debajo
+    @Published var updateVersion: String? = nil   // hay versión nueva en GitHub
+    var onUpdate: (() -> Void)?
     @Published var picking = false         // selector de proyecto abierto
     @Published var projects: [ProjectVM] = []
     @Published var pickQuery = ""
@@ -1011,7 +1160,7 @@ struct AgentCard: View {
                         Text(clock((a.end ?? now).timeIntervalSince(s)))
                             .font(.system(size: 14, weight: .semibold, design: .rounded)).monospacedDigit()
                     }
-                    Text(a.state == "attention" ? "te necesita" : a.state == "done" ? "terminado" : a.steps > 0 ? "\(a.steps) pasos" : "en marcha")
+                    Text(a.state == "attention" ? T("te necesita", "needs you") : a.state == "done" ? T("terminado", "done") : a.steps > 0 ? T("\(a.steps) pasos", "\(a.steps) steps") : T("en marcha", "running"))
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundColor(a.state == "working" ? .white.opacity(0.45) : stateColor(a.state))
                 }
@@ -1089,7 +1238,7 @@ struct WeekBars: View {
     var body: some View {
         let mx = max(1, values.max() ?? 1)
         let cal = Calendar.current
-        let letters = ["D", "L", "M", "X", "J", "V", "S"]
+        let letters = uiSpanish ? ["D", "L", "M", "X", "J", "V", "S"] : ["S", "M", "T", "W", "T", "F", "S"]
         HStack(alignment: .bottom, spacing: 6) {
             ForEach(0..<7, id: \.self) { i in
                 let d = cal.date(byAdding: .day, value: i - 6, to: Date()) ?? Date()
@@ -1557,9 +1706,9 @@ struct WidgetUI: View {
     var summary: String {
         let att = model.agents.filter { $0.state == "attention" }.count
         let work = model.agents.filter { $0.state == "working" }.count
-        if att > 0 { return att == 1 ? "1 te necesita" : "\(att) te necesitan" }
-        if work > 0 { return work == 1 ? "1 agente trabajando" : "\(work) agentes trabajando" }
-        return model.agents.isEmpty ? "En calma" : "Todo terminado"
+        if att > 0 { return att == 1 ? T("1 te necesita", "1 needs you") : T("\(att) te necesitan", "\(att) need you") }
+        if work > 0 { return work == 1 ? T("1 agente trabajando", "1 agent working") : T("\(work) agentes trabajando", "\(work) agents working") }
+        return model.agents.isEmpty ? T("En calma", "All quiet") : T("Todo terminado", "All done")
     }
 
     var body: some View {
@@ -1573,9 +1722,28 @@ struct WidgetUI: View {
         .environment(\.colorScheme, .dark)
     }
 
+    func updateBanner(_ v: String) -> some View {
+        Button(action: { model.onUpdate?() }) {
+            HStack(spacing: 7) {
+                Image(systemName: "arrow.down.circle.fill").font(.system(size: 13, weight: .semibold)).foregroundColor(uiAccent)
+                Text(T("Nueva versión \(v)", "New version \(v)")).font(.system(size: 11.5, weight: .semibold)).lineLimit(1)
+                Spacer(minLength: 4)
+                Text(T("Actualizar", "Update")).font(.system(size: 11, weight: .semibold)).foregroundColor(.white)
+                    .padding(.horizontal, 10).frame(height: 22).background(Capsule().fill(uiAccent))
+            }
+            .padding(.horizontal, 10).frame(height: 34)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(uiAccent.opacity(0.13)))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(uiAccent.opacity(0.35)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressStyle())
+        .help(T("Descarga e instala la versión \(v) desde GitHub. Chispa se cerrará y se volverá a abrir.", "Downloads and installs version \(v) from GitHub. Chispa will quit and reopen."))
+    }
+
     var content: some View {
         VStack(spacing: 10) {
             header
+            if let v = model.updateVersion { updateBanner(v) }
             agents
             ask
             actions
@@ -1611,19 +1779,19 @@ struct WidgetUI: View {
     var celebrating: Bool { model.partyAt.map { model.now.timeIntervalSince($0) < 5 } ?? false }
 
     var headline: String {
-        if celebrating { return "¡Tarea terminada!" }
+        if celebrating { return T("¡Tarea terminada!", "Task done!") }
         let att = model.agents.filter { $0.state == "attention" }.count
         let work = model.agents.filter { $0.state == "working" }.count
-        if att > 0 { return att == 1 ? "Te necesita" : "\(att) te necesitan" }
-        if work > 0 { return work == 1 ? "Trabajando" : "\(work) agentes trabajando" }
-        return model.agents.isEmpty ? "En calma" : "Todo terminado"
+        if att > 0 { return att == 1 ? T("Te necesita", "Needs you") : T("\(att) te necesitan", "\(att) need you") }
+        if work > 0 { return work == 1 ? T("Trabajando", "Working") : T("\(work) agentes trabajando", "\(work) agents working") }
+        return model.agents.isEmpty ? T("En calma", "All quiet") : T("Todo terminado", "All done")
     }
 
     var subline: String {
-        if celebrating { return model.partyName.isEmpty ? "Lista para revisar" : model.partyName }
-        if let a = model.agents.first(where: { $0.state == "attention" }) { return "Permiso en \(a.name)" }
+        if celebrating { return model.partyName.isEmpty ? T("Lista para revisar", "Ready for review") : model.partyName }
+        if let a = model.agents.first(where: { $0.state == "attention" }) { return T("Permiso en \(a.name)", "Permission needed in \(a.name)") }
         if let a = model.agents.first(where: { $0.state == "working" }) { return a.activity }
-        return model.agents.isEmpty ? "Ningún agente en marcha" : "Pulsa un agente para revisarlo"
+        return model.agents.isEmpty ? T("Ningún agente en marcha", "No agents running") : T("Pulsa un agente para revisarlo", "Click an agent to review it")
     }
 
     var header: some View {
@@ -1640,14 +1808,14 @@ struct WidgetUI: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { model.brain.poke() }
-            .help("Chispa. Tócala.")
+            .help(T("Chispa. Tócala.", "Chispa. Poke her."))
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkle").font(.system(size: 9.5, weight: .bold)).foregroundColor(uiAccent)
                     Text("CHISPA").font(.system(size: 9.5, weight: .bold)).tracking(1.1).foregroundColor(.white.opacity(0.45))
                     if model.presentation {
                         Image(systemName: "eye.slash.fill").font(.system(size: 9.5, weight: .semibold)).foregroundColor(.white.opacity(0.5))
-                            .help("Modo presentación: los proyectos privados no se muestran")
+                            .help(T("Modo presentación: los proyectos privados no se muestran", "Presentation mode: private projects are hidden"))
                     }
                 }
                 Text(headline).font(.system(size: 20, weight: .bold)).lineLimit(1).minimumScaleFactor(0.7)
@@ -1667,7 +1835,7 @@ struct WidgetUI: View {
                     .transition(.asymmetric(insertion: .move(edge: .top).combined(with: .opacity), removal: .opacity))
             }
             if model.more > 0 {
-                Text("+\(model.more) más").font(.system(size: 11, weight: .semibold)).foregroundColor(.white.opacity(0.45))
+                Text(T("+\(model.more) más", "+\(model.more) more")).font(.system(size: 11, weight: .semibold)).foregroundColor(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, alignment: .center).help(model.moreTip)
             }
         }
@@ -1698,13 +1866,13 @@ struct WidgetUI: View {
                 .buttonStyle(RowStyle())
             }
             if list.isEmpty {
-                Text("Ningún proyecto con ese nombre").font(.system(size: 12)).foregroundColor(.white.opacity(0.4)).frame(height: 60)
+                Text(T("Ningún proyecto con ese nombre", "No project with that name")).font(.system(size: 12)).foregroundColor(.white.opacity(0.4)).frame(height: 60)
             }
         }
         return Card(padding: 10) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    SectionLabel(text: "PROYECTO")
+                    SectionLabel(text: T("PROYECTO", "PROJECT"))
                     Spacer()
                     Button(action: { model.picking = false }) {
                         Image(systemName: "xmark").font(.system(size: 8.5, weight: .heavy)).foregroundColor(.white.opacity(0.6))
@@ -1716,9 +1884,9 @@ struct WidgetUI: View {
                 HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass").font(.system(size: 11, weight: .semibold)).foregroundColor(.white.opacity(0.4))
                     if model.renderMode {
-                        Text("Buscar…").font(.system(size: 12.5)).foregroundColor(.white.opacity(0.35)).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(T("Buscar…", "Search…")).font(.system(size: 12.5)).foregroundColor(.white.opacity(0.35)).frame(maxWidth: .infinity, alignment: .leading)
                     } else {
-                        TextField("", text: $model.pickQuery, prompt: Text("Buscar…").foregroundColor(.white.opacity(0.35)))
+                        TextField("", text: $model.pickQuery, prompt: Text(T("Buscar…", "Search…")).foregroundColor(.white.opacity(0.35)))
                             .textFieldStyle(.plain).font(.system(size: 12.5))
                             .onSubmit { if let f = list.first { model.onPick?(f.id) } }
                     }
@@ -1731,10 +1899,10 @@ struct WidgetUI: View {
                 }
                 Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
                 HStack(spacing: 6) {
-                    Button(action: { model.onChooseFolder?() }) { Label("Cambiar carpeta", systemImage: "folder.badge.gearshape") }
+                    Button(action: { model.onChooseFolder?() }) { Label(T("Cambiar carpeta", "Change folder"), systemImage: "folder.badge.gearshape") }
                         .buttonStyle(MiniStyle()).fixedSize()
                     if model.canEditSelf {
-                        Button(action: { model.onEditSelf?() }) { Label("Editar Chispa", systemImage: "terminal") }
+                        Button(action: { model.onEditSelf?() }) { Label(T("Editar Chispa", "Edit Chispa"), systemImage: "terminal") }
                             .buttonStyle(MiniStyle()).fixedSize()
                     }
                     Spacer(minLength: 0)
@@ -1749,10 +1917,10 @@ struct WidgetUI: View {
         return HStack(spacing: 8) {
             Image(systemName: "sparkle").font(.system(size: 11, weight: .bold)).foregroundColor(uiAccent)
             if model.renderMode {
-                Text(model.prompt.isEmpty ? "Pídele algo a Claude…" : model.prompt).font(.system(size: 13)).lineLimit(1)
+                Text(model.prompt.isEmpty ? T("Pídele algo a Claude…", "Ask Claude something…") : model.prompt).font(.system(size: 13)).lineLimit(1)
                     .foregroundColor(.white.opacity(model.prompt.isEmpty ? 0.38 : 1)).frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                TextField("", text: $model.prompt, prompt: Text("Pídele algo a Claude…").foregroundColor(.white.opacity(0.38)))
+                TextField("", text: $model.prompt, prompt: Text(T("Pídele algo a Claude…", "Ask Claude something…")).foregroundColor(.white.opacity(0.38)))
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .onSubmit { send() }
@@ -1764,7 +1932,7 @@ struct WidgetUI: View {
                     .background(Circle().fill(ready ? uiAccent : Color.white.opacity(0.09)))
             }
             .buttonStyle(PressStyle())
-            .help("Abre un agente nuevo en «\(model.project)» con esta petición (o pulsa Intro). Atajo para escribir aquí: ⌃⌥C")
+            .help(T("Abre un agente nuevo en «\(model.project)» con esta petición (o pulsa Intro). Atajo para escribir aquí: ⌃⌥C", "Opens a new agent in “\(model.project)” with this request (or press Return). Shortcut to type here: ⌃⌥C"))
         }
         .padding(.leading, 12).padding(.trailing, 6).frame(height: 38)
         .background(RoundedRectangle(cornerRadius: 19, style: .continuous).fill(Color.white.opacity(0.09)))
@@ -1791,17 +1959,17 @@ struct WidgetUI: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(CapsuleStyle())
-            .help("Elegir proyecto")
+            .help(T("Elegir proyecto", "Choose project"))
             Button(action: { model.onNew?() }) {
-                HStack(spacing: 4) { Image(systemName: "plus").font(.system(size: 10, weight: .bold)); Text("Nueva") }
+                HStack(spacing: 4) { Image(systemName: "plus").font(.system(size: 10, weight: .bold)); Text(T("Nueva", "New")) }
             }
                 .buttonStyle(CapsuleStyle(filled: true, compact: true))
                 .fixedSize()
-                .help("Crear una carpeta nueva de proyecto y abrir Claude en ella")
-            Button(action: { model.onContinue?() }) { Text("Seguir") }
+                .help(T("Crear una carpeta nueva de proyecto y abrir Claude en ella", "Create a new project folder and open Claude in it"))
+            Button(action: { model.onContinue?() }) { Text(T("Seguir", "Resume")) }
                 .buttonStyle(CapsuleStyle(compact: true))
                 .fixedSize()
-                .help("Retomar la última conversación del proyecto")
+                .help(T("Retomar la última conversación del proyecto", "Resume the project's last conversation"))
         }
     }
 
@@ -1810,10 +1978,10 @@ struct WidgetUI: View {
             Card {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        SectionLabel(text: "RESULTADOS")
+                        SectionLabel(text: T("RESULTADOS", "RESULTS"))
                         Spacer()
                         HStack(spacing: 3) {
-                            Text("Informe semanal")
+                            Text(T("Informe semanal", "Weekly report"))
                             Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .bold))
                         }
                         .font(.system(size: 10.5, weight: .semibold)).foregroundColor(uiAccent)
@@ -1827,23 +1995,23 @@ struct WidgetUI: View {
                                 .scaleEffect(model.bump ? 1.12 : 1, anchor: .bottomLeading)
                                 .animation(.spring(response: 0.45, dampingFraction: 0.55), value: model.bump)
                                 .animation(.spring(response: 0.5, dampingFraction: 0.8), value: model.today.tasks)
-                            Text("tareas hoy").font(.system(size: 12, weight: .medium)).foregroundColor(.white.opacity(0.55))
+                            Text(T("tareas hoy", "tasks today")).font(.system(size: 12, weight: .medium)).foregroundColor(.white.opacity(0.55))
                         }
                         Spacer()
                         WeekBars(values: model.perDay)
                     }
                     Rectangle().fill(Color.white.opacity(0.08)).frame(height: 1)
                     HStack(spacing: 0) {
-                        stat(model.statsLoaded ? StatsText.duration(model.today.seconds) : "–", "de agente hoy")
-                        stat(model.statsLoaded ? "\(model.week.tasks)" : "–", "tareas · 7 días")
-                        stat(model.statsLoaded ? StatsText.duration(model.week.seconds) : "–", "de agente · 7 días")
+                        stat(model.statsLoaded ? StatsText.duration(model.today.seconds) : "–", T("de agente hoy", "agent time today"))
+                        stat(model.statsLoaded ? "\(model.week.tasks)" : "–", T("tareas · 7 días", "tasks · 7 days"))
+                        stat(model.statsLoaded ? StatsText.duration(model.week.seconds) : "–", T("de agente · 7 días", "agent · 7 days"))
                     }
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
-        .help("Clic para generar el informe semanal.\n\nSale de tus sesiones reales de Claude Code.\n• Tareas: peticiones tuyas que Claude ha resuelto.\n• Agente: tiempo que Claude ha estado trabajando (no cuenta pausas de más de 5 min).")
+        .help(T("Clic para generar el informe semanal.\n\nSale de tus sesiones reales de Claude Code.\n• Tareas: peticiones tuyas que Claude ha resuelto.\n• Agente: tiempo que Claude ha estado trabajando (no cuenta pausas de más de 5 min).", "Click to create the weekly report.\n\nIt comes from your real Claude Code sessions.\n• Tasks: your requests that Claude has completed.\n• Agent: time Claude has been working (pauses over 5 min don't count)."))
     }
 
     func stat(_ value: String, _ label: String) -> some View {
@@ -1859,17 +2027,17 @@ struct WidgetUI: View {
         let known = model.usage.filter { $0.left != nil }
         guard !known.isEmpty else { return nil }
         if let w = known.filter({ $0.runsOut != nil }).min(by: { $0.runsOut! < $1.runsOut! }) {
-            return ("\(w.label): a este ritmo se agota en ~\(roughSpan(w.runsOut!))", true)
+            return (T("\(w.label): a este ritmo se agota en ~\(roughSpan(w.runsOut!))", "\(w.label): at this pace it runs out in ~\(roughSpan(w.runsOut!))"), true)
         }
-        if let e = known.first(where: { ($0.left ?? 1) <= 0.005 }) { return ("\(e.label) agotada", true) }
+        if let e = known.first(where: { ($0.left ?? 1) <= 0.005 }) { return (T("\(e.label) agotada", "\(e.label) used up"), true) }
         guard known.contains(where: { $0.timeLeft != nil }) else { return nil }
-        return ("A este ritmo te llega hasta que se renueve", false)
+        return (T("A este ritmo te llega hasta que se renueve", "At this pace it lasts until it resets"), false)
     }
 
     /// La explicación del anillo pulsado, una idea por línea.
     func usageLines(_ u: UsageVM) -> [String] {
         var out = u.tip.components(separatedBy: ". ").filter { !$0.hasPrefix("La marca blanca") }
-        if u.runsOut == nil, u.timeLeft != nil, u.left != nil { out.append("A este ritmo te llega hasta que se renueve") }
+        if u.runsOut == nil, u.timeLeft != nil, u.left != nil { out.append(T("A este ritmo te llega hasta que se renueve", "At this pace it lasts until it resets")) }
         return out
     }
 
@@ -1881,19 +2049,19 @@ struct WidgetUI: View {
     var usageInvite: some View {
         Card {
             VStack(alignment: .leading, spacing: 9) {
-                SectionLabel(text: "TE QUEDA DE CLAUDE")
+                SectionLabel(text: T("TE QUEDA DE CLAUDE", "CLAUDE USAGE LEFT"))
                 HStack(spacing: 10) {
-                    Text("Cuánto te queda de la sesión y de la semana, y si a tu ritmo te llega.")
+                    Text(T("Cuánto te queda de la sesión y de la semana, y si a tu ritmo te llega.", "How much of your session and week is left, and whether it will last at your pace."))
                         .font(.system(size: 11)).foregroundColor(.white.opacity(0.62))
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Button(action: { model.onEnableUsage?() }) {
-                        Text("Activar").font(.system(size: 11.5, weight: .semibold)).foregroundColor(.white)
+                        Text(T("Activar", "Turn on")).font(.system(size: 11.5, weight: .semibold)).foregroundColor(.white)
                             .padding(.horizontal, 13).frame(height: 28)
                             .background(Capsule().fill(uiAccent))
                     }
                     .buttonStyle(PressStyle())
-                    .help("Te explicará qué hace antes de activarlo")
+                    .help(T("Te explicará qué hace antes de activarlo", "It explains what it does before turning it on"))
                 }
             }
         }
@@ -1902,7 +2070,7 @@ struct WidgetUI: View {
     var usageRings: some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
-                SectionLabel(text: "TE QUEDA DE CLAUDE")
+                SectionLabel(text: T("TE QUEDA DE CLAUDE", "CLAUDE USAGE LEFT"))
                 HStack(spacing: 0) {
                     ForEach(model.usage) { u in
                         Button(action: {
@@ -1911,7 +2079,7 @@ struct WidgetUI: View {
                             model.onUsagePick?()
                         }) { Ring(u: u, picked: model.usagePick == u.id, dimmed: model.usagePick != nil && model.usagePick != u.id) }
                         .buttonStyle(PressStyle())
-                        .help(model.usagePick == u.id ? "Clic para cerrar" : "Clic para ver el detalle")
+                        .help(model.usagePick == u.id ? T("Clic para cerrar", "Click to close") : T("Clic para ver el detalle", "Click for details"))
                     }
                 }
                 .padding(.vertical, -5)
@@ -1950,17 +2118,17 @@ struct WidgetUI: View {
                     HStack(spacing: 0) {
                         MiniMeter(icon: "cpu", label: "CPU", value: "\(Int((model.cpu * 100).rounded())) %", fraction: model.cpu)
                         Spacer(minLength: 0)
-                        MiniMeter(icon: "memorychip", label: "MEMORIA", value: model.memText, fraction: model.memFraction)
+                        MiniMeter(icon: "memorychip", label: T("MEMORIA", "MEMORY"), value: model.memText, fraction: model.memFraction)
                         Spacer(minLength: 0)
-                        MiniMeter(icon: "internaldrive", label: "DISCO", value: model.diskText, fraction: model.diskFraction).help(model.diskTip)
+                        MiniMeter(icon: "internaldrive", label: T("DISCO", "DISK"), value: model.diskText, fraction: model.diskFraction).help(model.diskTip)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(PressStyle())
-                .help(model.presentation ? "" : "Clic para ver qué apps usan más memoria")
+                .help(model.presentation ? "" : T("Clic para ver qué apps usan más memoria", "Click to see which apps use the most memory"))
                 if model.showApps && !model.presentation {
                     VStack(alignment: .leading, spacing: 5) {
-                        SectionLabel(text: "LO QUE MÁS MEMORIA USA").padding(.bottom, 1)
+                        SectionLabel(text: T("LO QUE MÁS MEMORIA USA", "USING THE MOST MEMORY")).padding(.bottom, 1)
                         let top = max(1, model.topApps.map(\.bytes).max() ?? 1)
                         ForEach(model.topApps) { app in
                             let gb = Double(app.bytes) / 1_073_741_824
@@ -2022,11 +2190,11 @@ struct WidgetUI: View {
                     ForEach([30, 60, 120], id: \.self) { m in
                         Button(action: { model.onTimer?(m) }) { Text(m == 30 ? "½h" : m == 60 ? "1h" : "2h") }
                             .buttonStyle(ChipStyle(selected: model.timerOn && model.timerMinutes == m))
-                            .help(model.timerOn && model.timerMinutes == m ? "Pulsa otra vez para cancelar" : "Mantener despierto \(m == 30 ? "media hora" : m == 60 ? "1 hora" : "2 horas")")
+                            .help(model.timerOn && model.timerMinutes == m ? T("Pulsa otra vez para cancelar", "Click again to cancel") : (m == 30 ? T("Mantener despierto media hora", "Stay awake for half an hour") : m == 60 ? T("Mantener despierto 1 hora", "Stay awake for 1 hour") : T("Mantener despierto 2 horas", "Stay awake for 2 hours")))
                     }
                     Button(action: { model.onDisplayOff?() }) { Image(systemName: "display").font(.system(size: 10.5, weight: .semibold)) }
                         .buttonStyle(ChipStyle())
-                        .help("Apagar la pantalla ahora (sin dormir)")
+                        .help(T("Apagar la pantalla ahora (sin dormir)", "Turn off the display now (without sleeping)"))
                 }
             }
         }
@@ -2183,20 +2351,20 @@ class WidgetView: NSView {
         var left = ""
         if disabled, let end = timerEnd { left = clock(end.timeIntervalSinceNow) }
         let timerOn = disabled && timerEnd != nil
-        let title = timerOn ? "Despierto \(left)" : disabled ? "Siempre despierto" : "Reposo normal"
+        let title = timerOn ? T("Despierto \(left)", "Awake \(left)") : disabled ? T("Siempre despierto", "Always awake") : T("Reposo normal", "Normal sleep")
         if model.sleepTitle != title { model.sleepTitle = title }
         if model.timerOn != timerOn { model.timerOn = timerOn }
         if model.timerMinutes != timerMinutes { model.timerMinutes = timerMinutes }
-        lidText = disabled ? "Con la tapa cerrada: no duerme" : "Con la tapa cerrada: duerme"
-        let tip = "Clic para cambiar entre reposo normal y siempre despierto. \(lidText)."
+        lidText = disabled ? T("Con la tapa cerrada: no duerme", "With the lid closed: stays awake") : T("Con la tapa cerrada: duerme", "With the lid closed: sleeps")
+        let tip = T("Clic para cambiar entre reposo normal y siempre despierto. \(lidText).", "Click to switch between normal sleep and always awake. \(lidText).")
         if model.sleepTip != tip { model.sleepTip = tip }
-        var text = "Corriente", sym = "powerplug.fill", low = false, charging = false
+        var text = T("Corriente", "Power adapter"), sym = "powerplug.fill", low = false, charging = false
         if let b = battery {
             let step = b.level >= 88 ? 100 : b.level >= 63 ? 75 : b.level >= 38 ? 50 : b.level >= 13 ? 25 : 0
             low = b.level <= 20 && !b.onAC
             charging = b.charging
             sym = b.charging ? "battery.100percent.bolt" : "battery.\(step)percent"
-            text = "\(b.level) % · \(b.charging ? "cargando" : b.onAC ? "enchufado" : "batería")"
+            text = "\(b.level) % · " + (b.charging ? T("cargando", "charging") : b.onAC ? T("enchufado", "plugged in") : T("batería", "battery"))
         }
         if model.batteryText != text { model.batteryText = text }
         if model.batterySymbol != sym { model.batterySymbol = sym }
@@ -2230,15 +2398,15 @@ class WidgetView: NSView {
 
     func updateUsage(_ u: [String: UsageLimit]?) {
         let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "es_ES")
-        fmt.dateFormat = "EEE d 'a las' H:mm"
+        fmt.locale = uiLocale
+        fmt.dateFormat = uiSpanish ? "EEE d 'a las' H:mm" : "EEE d 'at' h:mm a"
         func tipBase(_ left: Double, _ what: String, _ l: UsageLimit) -> String {
-            "Te queda el \(Int(left)) % \(what)" + (l.resetsAt.map { ". Se reinicia el \(fmt.string(from: $0))" } ?? "")
+            T("Te queda el \(Int(left)) % \(what)", "\(Int(left)) % left \(what)") + (l.resetsAt.map { T(". Se reinicia el \(fmt.string(from: $0))", ". Resets \(fmt.string(from: $0))") } ?? "")
         }
         func vm(_ id: String, _ label: String, _ l: UsageLimit?, _ what: String) -> UsageVM {
             guard let l else {
-                return UsageVM(id: id, label: label, left: nil, detail: u == nil ? "sin datos" : "—",
-                               tip: u == nil ? "No se pudo leer el uso (abre Claude Code para renovar la sesión)" : "")
+                return UsageVM(id: id, label: label, left: nil, detail: u == nil ? T("sin datos", "no data") : "—",
+                               tip: u == nil ? T("No se pudo leer el uso (abre Claude Code para renovar la sesión)", "Couldn't read usage (open Claude Code to renew the session)") : "")
             }
             let left = max(0, 100 - l.percent)
             let r = shortUntil(l.resetsAt)
@@ -2255,17 +2423,17 @@ class WidgetView: NSView {
                     if secondsToEmpty < remain * 0.95 { runsOut = secondsToEmpty }
                 }
             }
-            let pace = runsOut.map { ". A este ritmo se agota en unos \(roughSpan($0)), antes de renovarse" }
-                ?? (timeLeft != nil ? ". La marca blanca es el tiempo que falta: si el arco la supera, vas con margen" : "")
-            return UsageVM(id: id, label: label, left: left / 100, detail: r.isEmpty ? " " : "en \(r)", tip: tipBase(left, what, l) + pace, timeLeft: timeLeft, runsOut: runsOut)
+            let pace = runsOut.map { T(". A este ritmo se agota en unos \(roughSpan($0)), antes de renovarse", ". At this pace it runs out in about \(roughSpan($0)), before it resets") }
+                ?? (timeLeft != nil ? T(". La marca blanca es el tiempo que falta: si el arco la supera, vas con margen", ". The white mark is the time left: if the arc is past it, you have room") : "")
+            return UsageVM(id: id, label: label, left: left / 100, detail: r.isEmpty ? " " : T("en \(r)", "in \(r)"), tip: tipBase(left, what, l) + pace, timeLeft: timeLeft, runsOut: runsOut)
             // (sin ritmo)
-            return UsageVM(id: id, label: label, left: left / 100, detail: r.isEmpty ? " " : "en \(r)",
-                           tip: "Te queda el \(Int(left)) % \(what)" + (l.resetsAt.map { ". Se reinicia el \(fmt.string(from: $0))" } ?? ""))
+            return UsageVM(id: id, label: label, left: left / 100, detail: r.isEmpty ? " " : T("en \(r)", "in \(r)"),
+                           tip: T("Te queda el \(Int(left)) % \(what)", "\(Int(left)) % left \(what)") + (l.resetsAt.map { T(". Se reinicia el \(fmt.string(from: $0))", ". Resets \(fmt.string(from: $0))") } ?? ""))
         }
-        var new = [vm("session", "Sesión", u?["session"], "de la sesión (5 h)"),
-                   vm("week", "Semana", u?["weekly"], "de la semana (todos los modelos)")]
+        var new = [vm("session", T("Sesión", "Session"), u?["session"], T("de la sesión (5 h)", "of the session (5 h)")),
+                   vm("week", T("Semana", "Week"), u?["weekly"], T("de la semana (todos los modelos)", "of the week (all models)"))]
         if let name = u?.keys.filter({ $0 != "session" && $0 != "weekly" }).sorted().first {
-            new.append(vm("model", name, u?[name], "de la semana para \(name)"))
+            new.append(vm("model", name, u?[name], T("de la semana para \(name)", "of the week for \(name)")))
         }
         model.usage = new
     }
@@ -2300,7 +2468,7 @@ class WidgetView: NSView {
         func est() -> CGFloat {
             let shownN = min(list.count, maxR)
             return 125 + CGFloat(shownN) * 67 + (list.count > maxR ? 22 : 0) + 44 + 40
-                + (hideR ? 0 : 180) + (hideU ? 0 : !model.usageEnabled ? 100 : 180 + (model.usagePick != nil ? 40 : 0)) + (apps ? 315 : 130) + 12
+                + (hideR ? 0 : 180) + (hideU ? 0 : !model.usageEnabled ? 100 : 180 + (model.usagePick != nil ? 40 : 0)) + (apps ? 315 : 130) + 12 + (model.updateVersion != nil ? 44 : 0)
         }
         var steps: [() -> Void] = []
         if apps { steps.append { hideR = true } }
@@ -2314,16 +2482,16 @@ class WidgetView: NSView {
         let shown = Array(list.prefix(maxR))
         let vms: [AgentVM] = shown.map { s in
             let secret = isSecret(s)
-            let fallback = s.state == "attention" ? "Espera tu permiso" : s.state == "done" ? "Listo para revisar" : "Trabajando"
-            return AgentVM(id: s.id, name: secret ? "Proyecto privado" : s.project, state: s.state,
-                           activity: secret || s.activity.isEmpty ? fallback : s.activity,
+            let fallback = s.state == "attention" ? T("Espera tu permiso", "Waiting for your permission") : s.state == "done" ? T("Listo para revisar", "Ready for review") : T("Trabajando", "Working")
+            return AgentVM(id: s.id, name: secret ? T("Proyecto privado", "Private project") : s.project, state: s.state,
+                           activity: secret || s.activity.isEmpty ? fallback : trActivity(s.activity),
                            start: s.start, end: s.state == "done" ? (s.end ?? s.date) : nil, steps: s.steps,
-                           tip: secret ? "Clic para ir a su Terminal" : "\(s.cwd)\nClic para ir a su Terminal")
+                           tip: secret ? T("Clic para ir a su ventana", "Click to go to its window") : T("\(s.cwd)\nClic para ir a su ventana", "\(s.cwd)\nClick to go to its window"))
         }
         if vms != model.agents { model.agents = vms }
         let rest = list.dropFirst(maxR)
         if model.more != rest.count { model.more = rest.count }
-        model.moreTip = rest.map { isSecret($0) ? "Proyecto privado" : $0.project }.joined(separator: "\n")
+        model.moreTip = rest.map { isSecret($0) ? T("Proyecto privado", "Private project") : $0.project }.joined(separator: "\n")
         let key = list.contains { $0.state == "attention" } ? "att" : list.contains { $0.state == "working" } ? "work"
             : list.contains { $0.state == "done" } ? "done" : "idle"
         if model.mood != key { model.mood = key }
@@ -2468,14 +2636,14 @@ struct SetupRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
                     Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
-                    if optional { Text("OPCIONAL").font(.system(size: 8.5, weight: .bold)).tracking(0.6).foregroundColor(.white.opacity(0.45))
+                    if optional { Text(T("OPCIONAL", "OPTIONAL")).font(.system(size: 8.5, weight: .bold)).tracking(0.6).foregroundColor(.white.opacity(0.45))
                         .padding(.horizontal, 5).padding(.vertical, 1.5).background(Capsule().stroke(Color.white.opacity(0.2))) }
                 }
                 Text(text).font(.system(size: 11)).foregroundColor(.white.opacity(0.58)).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             if state == 1 {
-                HStack(spacing: 4) { Image(systemName: "checkmark.circle.fill"); Text("Listo") }
+                HStack(spacing: 4) { Image(systemName: "checkmark.circle.fill"); Text(T("Listo", "Done")) }
                     .font(.system(size: 11.5, weight: .semibold)).foregroundColor(stateColor("done")).frame(minWidth: 96)
             } else {
                 Button(action: action) {
@@ -2500,37 +2668,37 @@ struct SetupView: View {
             HStack(spacing: 14) {
                 Mascot(mood: "done", t: 2.0, party: nil).frame(width: 76, height: 100).scaleEffect(0.7).frame(width: 54, height: 70)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Bienvenida a Chispa").font(.system(size: 20, weight: .bold)).foregroundColor(.white)
-                    Text("Para funcionar necesita unos permisos. Pulsa cada botón: si macOS pregunta, acepta; si ya se denegó, te llevo al sitio exacto de Ajustes.")
+                    Text(T("Bienvenida a Chispa", "Welcome to Chispa")).font(.system(size: 20, weight: .bold)).foregroundColor(.white)
+                    Text(T("Para funcionar necesita unos permisos. Pulsa cada botón: si macOS pregunta, acepta; si ya se denegó, te llevo al sitio exacto de Ajustes.", "Chispa needs a few permissions. Click each button: if macOS asks, accept; if it was already denied, I'll take you to the exact place in Settings."))
                         .font(.system(size: 12)).foregroundColor(.white.opacity(0.62)).fixedSize(horizontal: false, vertical: true)
                 }
             }
             VStack(spacing: 8) {
-                SetupRow(icon: "link", title: "Conectar con Claude Code",
-                         text: m.hooks == 3 ? "No encuentro Claude Code. Instálalo, ábrelo una vez y vuelve aquí." : "Para saber cuándo tus agentes trabajan, terminan o te necesitan. Añade unos avisos a ~/.claude/settings.json (guarda una copia antes).",
-                         state: m.hooks, button: m.hooks == 3 ? "Reintentar" : "Conectar", optional: false, action: a("hooks"))
-                SetupRow(icon: "bell.badge", title: "Notificaciones",
-                         text: "Te avisa cuando un agente termina o espera tu permiso.",
-                         state: m.notif, button: m.notif == 2 ? "Abrir Ajustes" : "Permitir", optional: false, action: a("notif"))
-                SetupRow(icon: "terminal", title: "Controlar Terminal",
-                         text: m.terminal == 3 ? "Abriré Terminal un momento para que macOS pueda preguntarte." : "Para llevarte a la pestaña del agente que pulses.",
-                         state: m.terminal, button: m.terminal == 2 ? "Abrir Ajustes" : "Permitir", optional: false, action: a("terminal"))
-                SetupRow(icon: "power", title: "Abrir al iniciar sesión",
-                         text: m.login == 2 ? "macOS necesita que la apruebes en Ítems de inicio." : "Para que Chispa esté siempre ahí, también después de reiniciar.",
-                         state: m.login, button: m.login == 2 ? "Abrir Ajustes" : "Activar", optional: false, action: a("login"))
-                SetupRow(icon: "chart.pie", title: "Lo que te queda de Claude",
-                         text: "Cuánto te queda de la sesión y la semana. Usa tu sesión de Claude Code del Llavero: pulsa «Permitir», no «Permitir siempre».",
-                         state: m.usage, button: "Activar", optional: true, action: a("usage"))
-                SetupRow(icon: "moon.zzz", title: "Reposo sin contraseña",
-                         text: "Que el botón de «no dormir» no pida tu contraseña cada vez. Te la pedirá una sola vez para crear una regla que solo permite eso.",
-                         state: m.sleep, button: "Configurar", optional: true, action: a("sleep"))
+                SetupRow(icon: "link", title: T("Conectar con Claude Code", "Connect to Claude Code"),
+                         text: m.hooks == 3 ? T("No encuentro Claude Code. Instálalo, ábrelo una vez y vuelve aquí.", "Claude Code isn't installed. Install it, open it once and come back here.") : T("Para saber cuándo tus agentes trabajan, terminan o te necesitan. Añade unos avisos a ~/.claude/settings.json (guarda una copia antes).", "So Chispa knows when your agents work, finish or need you. Adds a few hooks to ~/.claude/settings.json (a backup is kept)."),
+                         state: m.hooks, button: m.hooks == 3 ? T("Reintentar", "Retry") : T("Conectar", "Connect"), optional: false, action: a("hooks"))
+                SetupRow(icon: "bell.badge", title: T("Notificaciones", "Notifications"),
+                         text: T("Te avisa cuando un agente termina o espera tu permiso.", "Tells you when an agent finishes or is waiting for your permission."),
+                         state: m.notif, button: m.notif == 2 ? T("Abrir Ajustes", "Open Settings") : T("Permitir", "Allow"), optional: false, action: a("notif"))
+                SetupRow(icon: "terminal", title: T("Controlar Terminal", "Control Terminal"),
+                         text: m.terminal == 3 ? T("Abriré Terminal un momento para que macOS pueda preguntarte.", "Terminal will open for a moment so macOS can ask you.") : T("Para llevarte a la pestaña del agente que pulses.", "To take you to the tab of the agent you click."),
+                         state: m.terminal, button: m.terminal == 2 ? T("Abrir Ajustes", "Open Settings") : T("Permitir", "Allow"), optional: false, action: a("terminal"))
+                SetupRow(icon: "power", title: T("Abrir al iniciar sesión", "Open at login"),
+                         text: m.login == 2 ? T("macOS necesita que la apruebes en Ítems de inicio.", "macOS needs you to approve it in Login Items.") : T("Para que Chispa esté siempre ahí, también después de reiniciar.", "So Chispa is always there, even after restarting."),
+                         state: m.login, button: m.login == 2 ? T("Abrir Ajustes", "Open Settings") : T("Activar", "Turn on"), optional: false, action: a("login"))
+                SetupRow(icon: "chart.pie", title: T("Lo que te queda de Claude", "Claude usage left"),
+                         text: T("Cuánto te queda de la sesión y la semana. Usa tu sesión de Claude Code del Llavero: pulsa «Permitir», no «Permitir siempre».", "How much of your session and week is left. Uses your Claude Code login from the Keychain: click “Allow”, not “Always Allow”."),
+                         state: m.usage, button: T("Activar", "Turn on"), optional: true, action: a("usage"))
+                SetupRow(icon: "moon.zzz", title: T("Reposo sin contraseña", "Sleep without password"),
+                         text: T("Que el botón de «no dormir» no pida tu contraseña cada vez. Te la pedirá una sola vez para crear una regla que solo permite eso.", "So the “stay awake” button doesn't ask for your password every time. It asks once to create a rule that only allows that."),
+                         state: m.sleep, button: T("Configurar", "Set up"), optional: true, action: a("sleep"))
             }
             HStack {
-                Text("Puedes volver aquí cuando quieras: clic derecho en el widget › Permisos y configuración.")
+                Text(T("Puedes volver aquí cuando quieras: clic derecho en el widget › Permisos y configuración.", "You can come back any time: right-click the widget › Permissions and setup."))
                     .font(.system(size: 10.5)).foregroundColor(.white.opacity(0.45))
                 Spacer()
                 Button(action: { m.onDone?() }) {
-                    Text("Empezar").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    Text(T("Empezar", "Get started")).font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
                         .padding(.horizontal, 20).frame(height: 32).background(Capsule().fill(uiAccent))
                 }
                 .buttonStyle(PressStyle())
@@ -2590,12 +2758,12 @@ func installSleepRule() -> Bool {
 class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     var panel: NSPanel!
     var view: WidgetView!
-    let loginItem = NSMenuItem(title: "Abrir al iniciar sesión", action: #selector(toggleLogin), keyEquivalent: "")
+    let loginItem = NSMenuItem(title: T("Abrir al iniciar sesión", "Open at login"), action: #selector(toggleLogin), keyEquivalent: "")
     let lidItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    let hideItem = NSMenuItem(title: "Esconder en el borde izquierdo", action: #selector(toggleAutoHide), keyEquivalent: "")
-    let presentItem = NSMenuItem(title: "Modo presentación", action: #selector(togglePresentation), keyEquivalent: "")
-    let soundItem = NSMenuItem(title: "Sonido al terminar una tarea", action: #selector(toggleSound), keyEquivalent: "")
-    let usageItem = NSMenuItem(title: "Mostrar lo que te queda de Claude (experimental)", action: #selector(toggleUsage), keyEquivalent: "")
+    let hideItem = NSMenuItem(title: T("Esconder en el borde izquierdo", "Hide at the left edge"), action: #selector(toggleAutoHide), keyEquivalent: "")
+    let presentItem = NSMenuItem(title: T("Modo presentación", "Presentation mode"), action: #selector(togglePresentation), keyEquivalent: "")
+    let soundItem = NSMenuItem(title: T("Sonido al terminar una tarea", "Sound when a task finishes"), action: #selector(toggleSound), keyEquivalent: "")
+    let usageItem = NSMenuItem(title: T("Mostrar lo que te queda de Claude (experimental)", "Show Claude usage left (experimental)"), action: #selector(toggleUsage), keyEquivalent: "")
     var showUsage: Bool {
         get { defaults.bool(forKey: "showUsage") }
         set { defaults.set(newValue, forKey: "showUsage") }
@@ -2604,9 +2772,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         get { UserDefaults.standard.object(forKey: "doneSound") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "doneSound") }
     }
-    let privateItem = NSMenuItem(title: "Proyectos privados", action: nil, keyEquivalent: "")
+    let privateItem = NSMenuItem(title: T("Proyectos privados", "Private projects"), action: nil, keyEquivalent: "")
     var lastSessions: [ClaudeSession] = []
     let setup = SetupModel()
+    let updateItem = NSMenuItem(title: "", action: #selector(runUpdate), keyEquivalent: "")
+    let updatesItem = NSMenuItem(title: T("Buscar versiones nuevas", "Check for new versions"), action: #selector(toggleUpdates), keyEquivalent: "")
+    var checkUpdates: Bool {
+        get { defaults.object(forKey: "checkUpdates") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "checkUpdates") }
+    }
     var setupWindow: NSWindow?
     var setupTimer: Timer?
 
@@ -2624,7 +2798,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func root(of s: ClaudeSession) -> String { statsReader.projectBySession[s.id] ?? s.cwd }
     func isPrivate(_ s: ClaudeSession) -> Bool { privateProjects.contains(root(of: s)) || privateProjects.contains(s.cwd) }
     func shortName(_ path: String) -> String {
-        path == FileManager.default.homeDirectoryForCurrentUser.path ? "Carpeta personal" : (path as NSString).lastPathComponent
+        path == FileManager.default.homeDirectoryForCurrentUser.path ? T("Carpeta personal", "Home folder") : (path as NSString).lastPathComponent
     }
 
     // Posición: esquina superior (fija) y x «de casa» cuando no se esconde
@@ -2650,6 +2824,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var lastUsage: [String: UsageLimit]?
     var lastUsageFetch = Date.distantPast
     var lastDiskCheck = Date.distantPast
+    let launchedAt = Date()
     let statsReader = WorkStatsReader()
     var lastStats = Date.distantPast
 
@@ -2728,8 +2903,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         menu.addItem(lidItem)
         menu.addItem(.separator())
         menu.addItem(loginItem)
+        updatesItem.target = self
+        menu.addItem(updatesItem)
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Salir", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
+        let uninstallItem = NSMenuItem(title: T("Desinstalar Chispa…", "Uninstall Chispa…"), action: #selector(uninstall), keyEquivalent: "")
+        uninstallItem.target = self
+        menu.addItem(uninstallItem)
+        menu.addItem(withTitle: T("Salir", "Quit"), action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
+        updateItem.target = self
+        updateItem.isHidden = true
+        menu.insertItem(updateItem, at: 0)
         view.menu = menu
 
         // Pestaña del borde
@@ -2777,10 +2960,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         registerHotKey()
         hideItem.target = self
         menu.insertItem(hideItem, at: 2)
-        let connectItem = NSMenuItem(title: "Permisos y configuración…", action: #selector(showSetup), keyEquivalent: "")
+        let connectItem = NSMenuItem(title: T("Permisos y configuración…", "Permissions and setup…"), action: #selector(showSetup), keyEquivalent: "")
         connectItem.target = self
         menu.insertItem(connectItem, at: 3)
-        let reportItem = NSMenuItem(title: "Informe semanal…", action: #selector(makeReport), keyEquivalent: "")
+        let reportItem = NSMenuItem(title: T("Informe semanal…", "Weekly report…"), action: #selector(makeReport), keyEquivalent: "")
         reportItem.target = self
         menu.insertItem(reportItem, at: 0)
         menu.insertItem(.separator(), at: 1)
@@ -2795,6 +2978,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         menu.insertItem(usageItem, at: 4)
         view.model.usageEnabled = showUsage
         view.model.onEnableUsage = { [weak self] in self?.toggleUsage() }
+        view.model.onUpdate = { [weak self] in self?.runUpdate() }
         menu.insertItem(privateItem, at: 3)
         menu.insertItem(.separator(), at: 4)
         panel.setFrame(targetFrame(), display: false)
@@ -2839,7 +3023,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             } else if end <= Date() {
                 if setSleepDisabled(false) { disabled = false }
                 timerEnd = nil
-                notify("Temporizador terminado", "El Mac vuelve al reposo normal.")
+                notify(T("Temporizador terminado", "Timer finished"), T("El Mac vuelve al reposo normal.", "Your Mac is back to normal sleep."))
                 if !disabled { sleepIfLidClosed() }
             }
         }
@@ -2850,7 +3034,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             if disabled && !lowBatteryHandled {
                 lowBatteryHandled = true
                 if setSleepDisabled(false) { disabled = false; timerEnd = nil }
-                notify("Batería baja (\(b.level) %)", "He vuelto al reposo normal para que no se agote.")
+                notify(T("Batería baja (\(b.level) %)", "Low battery (\(b.level) %)"), T("He vuelto al reposo normal para que no se agote.", "Normal sleep is back on so it doesn't run out."))
                 if !disabled { sleepIfLidClosed() }
             }
         } else if bat?.onAC == true || (bat?.level ?? 100) > 20 {
@@ -2861,6 +3045,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         view.updateDetails(disabled: disabled, timerEnd: timerEnd, timerMinutes: timerMinutes, battery: bat)
         view.updateSystem()
         if Date().timeIntervalSince(lastDiskCheck) >= 30 { lastDiskCheck = Date(); view.updateDisk() }
+        // Una vez al día (y a los pocos segundos de abrir): ¿hay versión nueva?
+        let lastCheck = defaults.double(forKey: "lastUpdateCheck")
+        if checkUpdates && Date().timeIntervalSince1970 - lastCheck > 86400 && Date().timeIntervalSince(launchedAt) > 8 {
+            defaults.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
+            lookForUpdate()
+        }
         if !showUsage {
             // apagado: no se consulta nada
         } else if Date().timeIntervalSince(lastUsageFetch) >= 120 {
@@ -2890,9 +3080,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let terminalFront = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal"
         if claudeInitialized && !terminalFront {
             for s in sessions where prevClaude[s.id] != s.state {
-                let where_ = presentation && isPrivate(s) ? "un proyecto" : s.project
-                if s.state == "done" { notify("Claude ha terminado", "En \(where_)") }
-                if s.state == "attention" { notify("Claude te necesita", "Está esperando tu permiso en \(where_)") }
+                let where_ = presentation && isPrivate(s) ? T("un proyecto", "a project") : s.project
+                if s.state == "done" { notify(T("Claude ha terminado", "Claude has finished"), T("En \(where_)", "In \(where_)")) }
+                if s.state == "attention" { notify(T("Claude te necesita", "Claude needs you"), T("Está esperando tu permiso en \(where_)", "It's waiting for your permission in \(where_)")) }
             }
         }
         // Escondido, ya no se abre: lo cuenta la mascota de la pestañita
@@ -3082,7 +3272,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                 try html.write(to: file, atomically: true, encoding: .utf8)
                 NSWorkspace.shared.open(file)
             } catch {
-                let a = NSAlert(); a.messageText = "No se pudo crear el informe"; a.informativeText = error.localizedDescription; a.runModal()
+                let a = NSAlert(); a.messageText = T("No se pudo crear el informe", "Couldn't create the report"); a.informativeText = error.localizedDescription; a.runModal()
             }
         }
     }
@@ -3090,9 +3280,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     @objc func toggleUsage() {
         if !showUsage {
             let a = NSAlert()
-            a.messageText = "¿Mostrar lo que te queda de Claude?"
+            a.messageText = T("¿Mostrar lo que te queda de Claude?", "Show Claude usage left?")
             a.informativeText = "Para saberlo, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa «Permitir», no «Permitir siempre») y pregunta a Anthropic cuánto uso te queda. Es una función no oficial: puede dejar de funcionar sin aviso. Tu sesión no se guarda ni se envía a ningún otro sitio."
-            a.addButton(withTitle: "Mostrar"); a.addButton(withTitle: "Cancelar")
+            a.addButton(withTitle: T("Mostrar", "Show")); a.addButton(withTitle: T("Cancelar", "Cancel"))
             NSApp.activate(ignoringOtherApps: true)
             guard a.runModal() == .alertFirstButtonReturn else { return }
         }
@@ -3101,6 +3291,123 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         view.model.usageEnabled = showUsage
         lastUsageFetch = .distantPast
         view.refit()
+    }
+
+    func lookForUpdate(manual: Bool = false) {
+        fetchLatestVersion { [weak self] v in
+            guard let self else { return }
+            guard let v, isNewer(v, than: chispaVersion) else {
+                if manual {
+                    let a = NSAlert(); a.messageText = T("Tienes la última versión", "You have the latest version")
+                    a.informativeText = v == nil ? T("No he podido consultar GitHub. Inténtalo más tarde.", "Couldn't reach GitHub. Try again later.") : T("Chispa \(chispaVersion) es la más reciente.", "Chispa \(chispaVersion) is the newest.")
+                    NSApp.activate(ignoringOtherApps: true); a.runModal()
+                }
+                return
+            }
+            self.updateItem.title = T("Actualizar a la \(v)…", "Update to \(v)…")
+            self.updateItem.isHidden = false
+            self.view.model.updateVersion = v
+            self.view.refit()
+            if self.defaults.string(forKey: "notifiedVersion") != v {
+                self.defaults.set(v, forKey: "notifiedVersion")
+                notify(T("Hay una versión nueva de Chispa", "A new version of Chispa is out"), T("La \(v) ya está disponible. Pulsa «Actualizar» en el widget.", "Version \(v) is available. Click “Update” in the widget."))
+            }
+        }
+    }
+
+    @objc func toggleUpdates() {
+        checkUpdates.toggle()
+        updatesItem.state = checkUpdates ? .on : .off
+        if checkUpdates { lookForUpdate(manual: true) }
+    }
+
+    /// Descarga e instala la última versión con el instalador del repositorio; Chispa se cierra y se vuelve a abrir.
+    @objc func runUpdate() {
+        guard let v = view.model.updateVersion else { lookForUpdate(manual: true); return }
+        let a = NSAlert()
+        a.messageText = T("¿Actualizar Chispa a la \(v)?", "Update Chispa to \(v)?")
+        a.informativeText = T("Se descarga de GitHub, se comprueba su huella SHA-256 y se instala en lugar de la actual. Chispa se cerrará y se volverá a abrir sola; tus ajustes se conservan.", "It's downloaded from GitHub, its SHA-256 is checked and it replaces the current one. Chispa will quit and reopen by itself; your settings are kept.")
+        a.addButton(withTitle: T("Actualizar", "Update")); a.addButton(withTitle: T("Ahora no", "Not now"))
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        let log = cacheDir.appendingPathComponent("actualizacion.log").path.replacingOccurrences(of: "'", with: "'\\''")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        // Separado de Chispa: el instalador la cierra y la vuelve a abrir
+        p.arguments = ["-c", "nohup /bin/bash -c 'curl -fsSL https://raw.githubusercontent.com/\(chispaRepo)/main/install.sh | /bin/bash' > '\(log)' 2>&1 &"]
+        try? p.run()
+    }
+
+    /// Quita todo lo que Chispa ha puesto en el Mac y mueve la app a la Papelera.
+    @objc func uninstall() {
+        let a = NSAlert()
+        a.messageText = T("¿Desinstalar Chispa?", "Uninstall Chispa?")
+        a.informativeText = uiSpanish ? """
+        Se quitará:
+        • Los avisos de Chispa en ~/.claude/settings.json (los de otras apps se quedan).
+        • El arranque al iniciar sesión y el permiso para controlar Terminal.
+        • La regla de reposo sin contraseña, si la configuraste (te pedirá tu contraseña).
+        • Sus ajustes y su caché.
+        • La app, que irá a la Papelera.
+
+        Si el Mac está en modo «no dormir», vuelve al reposo normal. Tus informes en Documentos › Informes Claude se quedan.
+        """ : """
+        This will remove:
+        • Chispa's hooks in ~/.claude/settings.json (other apps' hooks stay).
+        • Open at login and the permission to control Terminal.
+        • The password-free sleep rule, if you set it up (it will ask for your password).
+        • Its settings and cache.
+        • The app, which goes to the Trash.
+
+        If your Mac is set to never sleep, normal sleep is restored. Your reports in Documents › Informes Claude are kept.
+        """
+        a.addButton(withTitle: T("Desinstalar", "Uninstall")); a.addButton(withTitle: T("Cancelar", "Cancel"))
+        a.buttons.first?.hasDestructiveAction = true
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+
+        if isSleepDisabled() { _ = setSleepDisabled(false) }
+        removeClaudeHooks()
+        try? SMAppService.mainApp.unregister()
+        let t = Process(); t.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        t.arguments = ["reset", "AppleEvents", "local.chispa"]; t.standardOutput = Pipe(); t.standardError = Pipe()
+        try? t.run(); t.waitUntilExit()
+        if FileManager.default.fileExists(atPath: "/etc/sudoers.d/chispa") {
+            var err: NSDictionary?
+            NSAppleScript(source: "do shell script \"/bin/rm -f /etc/sudoers.d/chispa\" with administrator privileges")?.executeAndReturnError(&err)
+        }
+        try? FileManager.default.removeItem(at: cacheDir)
+        try? FileManager.default.removeItem(at: home.appendingPathComponent("Library/HTTPStorages/local.chispa"))
+        try? FileManager.default.trashItem(at: Bundle.main.bundleURL, resultingItemURL: nil)
+        defaults.removePersistentDomain(forName: "local.chispa")
+        defaults.synchronize()
+        try? FileManager.default.removeItem(at: home.appendingPathComponent("Library/Preferences/local.chispa.plist"))
+        let done = NSAlert()
+        done.messageText = T("Chispa se ha desinstalado", "Chispa has been uninstalled")
+        done.informativeText = T("La app está en la Papelera. Gracias por probarla.", "The app is in the Trash. Thanks for trying it.")
+        done.runModal()
+        exit(0)
+    }
+
+    /// Quita de settings.json solo los avisos de Chispa.
+    func removeClaudeHooks() {
+        let file = home.appendingPathComponent(".claude/settings.json")
+        guard let d = try? Data(contentsOf: file), var root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+              var hooks = root["hooks"] as? [String: Any] else { return }
+        func isOurs(_ cmd: String) -> Bool { cmd.contains("Chispa") && cmd.contains("claude-hook.sh") }
+        for (event, value) in hooks {
+            guard let entries = value as? [[String: Any]] else { continue }
+            var kept: [[String: Any]] = []
+            for var e in entries {
+                let hs = (e["hooks"] as? [[String: Any]] ?? []).filter { !isOurs($0["command"] as? String ?? "") }
+                if hs.isEmpty { continue }
+                e["hooks"] = hs; kept.append(e)
+            }
+            if kept.isEmpty { hooks.removeValue(forKey: event) } else { hooks[event] = kept }
+        }
+        if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
+        guard let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return }
+        try? out.write(to: file, options: .atomic)
     }
 
     @objc func toggleSound() {
@@ -3162,7 +3469,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     // MARK: Acciones de Claude
     func projectName(_ path: String) -> String {
-        if presentation && privateProjects.contains(path) { return "Proyecto" }
+        if presentation && privateProjects.contains(path) { return T("Proyecto", "Project") }
         if path == projectsURL.path { return projectsName }
         if path.hasPrefix(projectsURL.path + "/") { return String(path.dropFirst(projectsURL.path.count + 1)) }
         return (path as NSString).lastPathComponent
@@ -3176,16 +3483,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     /// «Nueva»: pregunta siempre qué carpeta crear en la raíz de Anti y abre Claude dentro.
     func launchNew() {
-        var message = "¿Qué carpeta creo en \(projectsName)?"
+        var message = T("¿Qué carpeta creo en \(projectsName)?", "What folder should I create in \(projectsName)?")
         var typed = ""
         while true {
             let a = NSAlert()
             a.messageText = message
-            a.informativeText = "Se creará en \((projectsURL.path as NSString).abbreviatingWithTildeInPath) y Claude se abrirá dentro."
-            a.addButton(withTitle: "Crear y abrir")
-            a.addButton(withTitle: "Cancelar")
+            a.informativeText = T("Se creará en \((projectsURL.path as NSString).abbreviatingWithTildeInPath) y Claude se abrirá dentro.", "It will be created in \((projectsURL.path as NSString).abbreviatingWithTildeInPath) and Claude will open in it.")
+            a.addButton(withTitle: T("Crear y abrir", "Create and open"))
+            a.addButton(withTitle: T("Cancelar", "Cancel"))
             let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-            field.placeholderString = "Nombre de la carpeta"
+            field.placeholderString = T("Nombre de la carpeta", "Folder name")
             field.stringValue = typed
             a.accessoryView = field
             a.window.initialFirstResponder = field
@@ -3193,23 +3500,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             guard a.runModal() == .alertFirstButtonReturn else { return }
 
             typed = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            if typed.isEmpty { message = "Escribe un nombre para la carpeta"; continue }
+            if typed.isEmpty { message = T("Escribe un nombre para la carpeta", "Type a name for the folder"); continue }
             if typed.contains("/") || typed.contains(":") || typed.hasPrefix(".") {
-                message = "Ese nombre no vale (sin «/», «:» ni punto inicial)"; continue
+                message = T("Ese nombre no vale (sin «/», «:» ni punto inicial)", "That name won't work (no “/”, “:” or leading dot)"); continue
             }
             let url = projectsURL.appendingPathComponent(typed, isDirectory: true)
             let fm = FileManager.default
             if fm.fileExists(atPath: url.path) {
-                if !isDir(url) { message = "Ya hay un archivo con ese nombre"; continue }
+                if !isDir(url) { message = T("Ya hay un archivo con ese nombre", "There's already a file with that name"); continue }
                 let e = NSAlert()
-                e.messageText = "«\(typed)» ya existe"
-                e.informativeText = "¿Abro Claude en esa carpeta?"
-                e.addButton(withTitle: "Abrir")
-                e.addButton(withTitle: "Otro nombre")
-                if e.runModal() != .alertFirstButtonReturn { message = "¿Qué carpeta creo en \(projectsName)?"; continue }
+                e.messageText = T("«\(typed)» ya existe", "“\(typed)” already exists")
+                e.informativeText = T("¿Abro Claude en esa carpeta?", "Open Claude in that folder?")
+                e.addButton(withTitle: T("Abrir", "Open"))
+                e.addButton(withTitle: T("Otro nombre", "Another name"))
+                if e.runModal() != .alertFirstButtonReturn { message = T("¿Qué carpeta creo en \(projectsName)?", "What folder should I create in \(projectsName)?"); continue }
             } else {
                 do { try fm.createDirectory(at: url, withIntermediateDirectories: true) }
-                catch { message = "No se pudo crear: \(error.localizedDescription)"; continue }
+                catch { message = T("No se pudo crear: \(error.localizedDescription)", "Couldn't create it: \(error.localizedDescription)"); continue }
             }
             projectPath = url.path
             view.updateProject(projectName(url.path))
@@ -3237,8 +3544,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
         panel.directoryURL = projectsURL
-        panel.prompt = "Usar esta carpeta"
-        panel.message = "Elige la carpeta donde guardas tus proyectos. «Nueva» creará los proyectos dentro."
+        panel.prompt = T("Usar esta carpeta", "Use this folder")
+        panel.message = T("Elige la carpeta donde guardas tus proyectos. «Nueva» creará los proyectos dentro.", "Choose the folder where you keep your projects. “New” will create projects inside it.")
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         defaults.set(url.path, forKey: "projectsFolder")
@@ -3255,8 +3562,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let file = home.appendingPathComponent(".claude/settings.json")
         guard isDir(home.appendingPathComponent(".claude")) else {
             if !askIfMissing {     // lo ha pedido desde el menú
-                let a = NSAlert(); a.messageText = "No encuentro Claude Code en este Mac"
-                a.informativeText = "Instala Claude Code, ábrelo una vez y vuelve a elegir «Conectar con Claude Code»."
+                let a = NSAlert(); a.messageText = T("No encuentro Claude Code en este Mac", "Claude Code isn't installed on this Mac")
+                a.informativeText = T("Instala Claude Code, ábrelo una vez y vuelve a elegir «Conectar con Claude Code».", "Install Claude Code, open it once and choose “Connect to Claude Code” again.")
                 NSApp.activate(ignoringOtherApps: true); a.runModal()
             }
             return
@@ -3296,10 +3603,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             if askIfMissing && defaults.bool(forKey: "hooksAsked") { return }
             defaults.set(true, forKey: "hooksAsked")
             let a = NSAlert()
-            a.messageText = "¿Conecto el widget con Claude Code?"
+            a.messageText = T("¿Conecto el widget con Claude Code?", "Connect the widget to Claude Code?")
             a.informativeText = "Añadiré unos avisos a ~/.claude/settings.json para que Claude Code le diga al widget cuándo está trabajando, cuándo termina y cuándo te necesita. Guardo antes una copia del archivo. Puedes hacerlo más tarde desde el clic derecho."
-            a.addButton(withTitle: "Conectar")
-            a.addButton(withTitle: "Ahora no")
+            a.addButton(withTitle: T("Conectar", "Connect"))
+            a.addButton(withTitle: T("Ahora no", "Not now"))
             NSApp.activate(ignoringOtherApps: true)
             guard a.runModal() == .alertFirstButtonReturn else { return }
         }
@@ -3387,8 +3694,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         setup.act["sleep"] = { [weak self] in
             guard let self else { return }
             if !installSleepRule() {
-                let a = NSAlert(); a.messageText = "No se ha configurado"
-                a.informativeText = "No se creó la regla (quizá se canceló la contraseña). El botón de reposo seguirá funcionando, pero te pedirá la contraseña cada vez."
+                let a = NSAlert(); a.messageText = T("No se ha configurado", "It wasn't set up")
+                a.informativeText = T("No se creó la regla (quizá se canceló la contraseña). El botón de reposo seguirá funcionando, pero te pedirá la contraseña cada vez.", "The rule wasn't created (maybe the password was cancelled). The sleep button still works, but it will ask for your password every time.")
                 a.runModal()
             }
             self.refreshSetup()
@@ -3440,7 +3747,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     func goToTerminal(_ s: ClaudeSession? = nil) {
         if let s {
             if s.state == "done" { try? FileManager.default.removeItem(at: claudeStateDir.appendingPathComponent(s.id)) }
-            if focusTerminalTab(tty: s.tty) { tickClaude(); return }
+            if focusAgent(s) { tickClaude(); return }
         } else {
             clearDoneSessions()
         }
@@ -3452,6 +3759,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // MARK: Menú contextual
     func menuWillOpen(_ menu: NSMenu) {
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        updatesItem.state = checkUpdates ? .on : .off
         hideItem.state = autoHide ? .on : .off
         presentItem.state = presentation ? .on : .off
         // Proyectos de la última semana, los que están abiertos ahora y los ya marcados
@@ -3459,7 +3767,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let all = Set(statsReader.projects).union(lastSessions.map { root(of: $0) }).union(priv).filter { !$0.isEmpty }
         let sub = privateItem.submenu!
         sub.removeAllItems()
-        let head = NSMenuItem(title: "Marca los que no quieres enseñar:", action: nil, keyEquivalent: "")
+        let head = NSMenuItem(title: T("Marca los que no quieres enseñar:", "Check the ones you don't want to show:"), action: nil, keyEquivalent: "")
         head.isEnabled = false
         sub.addItem(head)
         for path in all.sorted(by: { shortName($0).localizedCaseInsensitiveCompare(shortName($1)) == .orderedAscending }) {
@@ -3470,7 +3778,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             it.state = priv.contains(path) ? .on : .off
             sub.addItem(it)
         }
-        privateItem.title = priv.isEmpty ? "Proyectos privados" : "Proyectos privados (\(priv.count))"
+        privateItem.title = priv.isEmpty ? T("Proyectos privados", "Private projects") : T("Proyectos privados (\(priv.count))", "Private projects (\(priv.count))")
         lidItem.title = view.lidText
     }
 
@@ -3479,7 +3787,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         do {
             if svc.status == .enabled { try svc.unregister() } else { try svc.register() }
         } catch {
-            let a = NSAlert(); a.messageText = "No se pudo cambiar"; a.informativeText = error.localizedDescription; a.runModal()
+            let a = NSAlert(); a.messageText = T("No se pudo cambiar", "Couldn't change it"); a.informativeText = error.localizedDescription; a.runModal()
         }
     }
 }
@@ -3511,9 +3819,9 @@ if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine
     }
     if scenario == "pick" {
         m.picking = true
-        let names: [(String, Int)] = [("Anti", 0), ("_cerebro", 0), ("Anochece", 0), ("AppGuion", 0), ("Guion", 1), ("V12", 1), ("V13", 1), ("Asistente MB", 0), ("Caserio", 0), ("cerebro-panel", 0), ("Daytrader", 0)]
+        let names: [(String, Int)] = [("Proyectos", 0), ("web-clientes", 0), ("informes-ventas", 0), ("app-movil", 0), ("pantalla-login", 1), ("pagos", 1), ("api", 1), ("migracion-datos", 0), ("blog", 0), ("panel-admin", 0), ("scripts", 0)]
         m.projects = names.enumerated().map { ProjectVM(id: "\($0.offset)", name: $0.element.0, level: $0.element.1, current: $0.offset == 5, root: $0.offset == 0) }
-        m.canEditSelf = true; m.project = "V12"
+        m.canEditSelf = true; m.project = "pagos"
     }
     if scenario == "apps" {
         m.showApps = true
@@ -3534,6 +3842,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine
     m.statsLoaded = true
     m.usageEnabled = scenario != "sinuso"
     if scenario == "uso" { m.usagePick = "s" }
+    if scenario == "update" { m.updateVersion = "2.5" }
     m.usage = [UsageVM(id: "s", label: "Sesión", left: 0.57, detail: "en 34 min", tip: scenario == "uso" ? "Te queda el 57 % de la sesión (5 h). Se reinicia el mié 25 a las 6:10" : "", timeLeft: 0.11),
                UsageVM(id: "w", label: "Semana", left: 0.81, detail: "en 5 d", tip: "", timeLeft: 0.71),
                UsageVM(id: "m", label: "Opus", left: scenario == "alert" ? 0.14 : 0.86, detail: "en 5 d", tip: "", timeLeft: 0.71,
@@ -3580,6 +3889,51 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-tab"), i + 1 < Command
             try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
         }
     }
+    exit(0)
+}
+
+// `Chispa --render-gif salida.gif` anima la pestaña y la mascota: duerme → trabaja → celebra → duerme (para el README)
+if let i = CommandLine.arguments.firstIndex(of: "--render-gif"), i + 1 < CommandLine.arguments.count {
+    let fps = 15.0, total = 10.0
+    let base = Date(timeIntervalSinceReferenceDate: 800_000_000)
+    func phase(_ t: Double) -> (mood: String, label: String, working: Int) {
+        t < 2.6 ? ("idle", T("Sin agentes: duerme", "No agents: asleep"), 0) : t < 6.2 ? ("work", T("Un agente trabajando", "An agent working"), 1) : t < 8.8 ? ("idle", T("¡Tarea terminada!", "Task done!"), 0) : ("idle", T("Vuelve a dormir", "Back to sleep"), 0)
+    }
+    let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: CommandLine.arguments[i + 1]) as CFURL, "com.compuserve.gif" as CFString, Int(total * fps), nil)!
+    CGImageDestinationSetProperties(dest, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+    let frameProps = [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 1.0 / fps]] as CFDictionary
+    MainActor.assumeIsolated {
+        for k in 0..<Int(total * fps) {
+            let t = Double(k) / fps
+            let ph = phase(t), now = base.addingTimeInterval(t)
+            let party: Date? = t >= 6.2 ? base.addingTimeInterval(6.2) : nil
+            let tm = TabModel(); tm.mood = ph.mood; tm.working = ph.working; tm.partyAt = party; tm.renderT = t; tm.renderNow = now
+            let shape = UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 14, topTrailingRadius: 14, style: .continuous)
+            let scene = ZStack(alignment: .leading) {
+                LinearGradient(colors: [Color(red: 0.93, green: 0.60, blue: 0.40), Color(red: 0.36, green: 0.30, blue: 0.46), Color(red: 0.12, green: 0.13, blue: 0.20)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing)
+                TabMascot(m: tm)
+                    .background(shape.fill(Color(white: 0.09)).overlay(shape.stroke(Color.white.opacity(0.16))))
+                    .scaleEffect(1.6, anchor: .leading)
+                HStack {
+                    Spacer()
+                    VStack(spacing: 6) {
+                        Mascot(mood: ph.mood, t: t, party: party.map { now.timeIntervalSince($0) }.flatMap { $0 < 3 ? $0 : nil })
+                            .frame(width: 76, height: 100).scaleEffect(1.35).frame(width: 110, height: 128)
+                        Text(ph.label).font(.system(size: 13, weight: .semibold, design: .rounded)).foregroundColor(.white)
+                            .padding(.horizontal, 12).frame(height: 26).background(Capsule().fill(Color.black.opacity(0.35)))
+                    }
+                    .frame(width: 210)
+                    Spacer().frame(width: 18)
+                }
+            }
+            .frame(width: 330, height: 190)
+            let r = ImageRenderer(content: scene)
+            r.scale = 2
+            if let img = r.cgImage { CGImageDestinationAddImage(dest, img, frameProps) }
+        }
+    }
+    CGImageDestinationFinalize(dest)
     exit(0)
 }
 
