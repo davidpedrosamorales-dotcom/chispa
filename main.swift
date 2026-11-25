@@ -1028,6 +1028,7 @@ final class WidgetModel: ObservableObject {
     @Published var diskText = "…"
     @Published var diskTip = ""
     @Published var showApps = false
+    @Published var attached = false     // escondido en el borde: pegado a él, negro, como una prolongación de la pestaña
     @Published var topApps: [AppMem] = []
     @Published var awake = false
     @Published var sleepTitle = T("Reposo normal", "Normal sleep")
@@ -1092,6 +1093,30 @@ func clock(_ seconds: Double) -> String {
     let s = max(0, Int(seconds))
     return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
 }
+
+/// Pegada al borde izquierdo (como el notch de Glance, pero de lado): borde recto a la izquierda,
+/// esquinas redondeadas a la derecha y "orejas" cóncavas arriba y abajo donde se une con el borde.
+struct EdgeShape: Shape {
+    var radius: CGFloat = 28
+    var ear: CGFloat = 12
+    var closed = true          // false: sin el lado pegado al borde de la pantalla (para la línea de color)
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        let top = r.minY + ear, bot = r.maxY - ear
+        let rad = min(radius, (bot - top) / 2)
+        p.move(to: CGPoint(x: r.minX, y: r.minY))
+        p.addQuadCurve(to: CGPoint(x: r.minX + ear, y: top), control: CGPoint(x: r.minX, y: top))
+        p.addLine(to: CGPoint(x: r.maxX - rad, y: top))
+        p.addQuadCurve(to: CGPoint(x: r.maxX, y: top + rad), control: CGPoint(x: r.maxX, y: top))
+        p.addLine(to: CGPoint(x: r.maxX, y: bot - rad))
+        p.addQuadCurve(to: CGPoint(x: r.maxX - rad, y: bot), control: CGPoint(x: r.maxX, y: bot))
+        p.addLine(to: CGPoint(x: r.minX + ear, y: bot))
+        p.addQuadCurve(to: CGPoint(x: r.minX, y: r.maxY), control: CGPoint(x: r.minX, y: bot))
+        if closed { p.closeSubpath() }
+        return p
+    }
+}
+let edgeEar: CGFloat = 12
 
 struct HeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
@@ -1783,21 +1808,30 @@ struct WidgetUI: View {
             }
         }
         .padding(12)
+        .padding(.vertical, model.attached ? edgeEar : 0)
         .frame(width: WidgetView.W)
         .fixedSize(horizontal: false, vertical: true)
         .foregroundColor(.white)
         .background(GeometryReader { g in Color.clear.preference(key: HeightKey.self, value: g.size.height) })
         .background(backdrop)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous).strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+        .clipShape(cardShape)
+        .overlay(cardShape.stroke(Color.white.opacity(model.attached ? 0 : 0.10), lineWidth: 1))
+    }
+
+    var cardShape: AnyShape {
+        model.attached ? AnyShape(EdgeShape(radius: 28, ear: edgeEar)) : AnyShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
     }
 
     /// Cristal negro con un resplandor arriba del color del estado.
     var backdrop: some View {
         ZStack(alignment: .topLeading) {
-            if model.renderMode { Color(red: 0.10, green: 0.09, blue: 0.11) } else { Blur() }
-            Color.black.opacity(model.renderMode ? 0.35 : 0.58)
-            RadialGradient(colors: [stateColor(model.mood == "idle" ? "working" : model.mood).opacity(model.mood == "idle" ? 0.16 : 0.42), .clear],
+            if model.attached {
+                Color.black          // como el notch: negro sólido
+            } else {
+                if model.renderMode { Color(red: 0.10, green: 0.09, blue: 0.11) } else { Blur() }
+                Color.black.opacity(model.renderMode ? 0.35 : 0.58)
+            }
+            RadialGradient(colors: [stateColor(model.mood == "idle" ? "working" : model.mood).opacity((model.mood == "idle" ? 0.16 : 0.42) * (model.attached ? 0.6 : 1)), .clear],
                            center: UnitPoint(x: 0.15, y: 0.0), startRadius: 0, endRadius: 260)
                 .animation(.easeInOut(duration: 0.8), value: model.mood)
         }
@@ -2243,6 +2277,7 @@ final class GlowView: NSView {
     private let conic = CAGradientLayer()
     private var mood = ""
     private var active = true
+    var attached = false { didSet { if attached != oldValue { needsLayout = true } } }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override init(frame: NSRect) {
@@ -2267,7 +2302,14 @@ final class GlowView: NSView {
         CATransaction.begin(); CATransaction.setDisableActions(true)
         hostLayer.frame = bounds
         maskLayer.frame = bounds
-        maskLayer.path = CGPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), cornerWidth: 27, cornerHeight: 27, transform: nil)
+        if attached {
+            // sin el lado pegado al borde de la pantalla
+            // el mismo contorno que la zona negra, metido 1 punto hacia dentro para que se vea entero
+            let r = CGRect(x: bounds.minX, y: bounds.minY + 1, width: bounds.width - 1, height: bounds.height - 2)
+            maskLayer.path = EdgeShape(radius: 27, ear: edgeEar - 1, closed: false).path(in: r).cgPath
+        } else {
+            maskLayer.path = CGPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), cornerWidth: 27, cornerHeight: 27, transform: nil)
+        }
         let side = 2 * max(bounds.width, bounds.height)
         conic.bounds = CGRect(x: 0, y: 0, width: side, height: side)
         conic.position = CGPoint(x: bounds.midX, y: bounds.midY)
@@ -2311,16 +2353,23 @@ class WidgetView: NSView {
     private var lastTopApps = Date.distantPast
     /// Alto disponible en la pantalla para el widget.
     var room: CGFloat = 900 { didSet { if abs(room - oldValue) > 1 { updateClaude(sessions) } } }
-    private var host: NSView!
-    private let glow = GlowView(frame: .zero)
+    private(set) var host: NSView!
+    let glow = GlowView(frame: .zero)
+    /// Forma negra que se ve mientras la pestaña crece o se encoge (el contenido aparece después).
+    let backLayer = CAShapeLayer()
 
     override var isFlipped: Bool { true }
     override var menu: NSMenu? { didSet { host?.menu = menu } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
+        wantsLayer = true
+        backLayer.fillColor = NSColor.black.cgColor
+        backLayer.opacity = 0
+        layer?.addSublayer(backLayer)
         let h = WidgetHost(rootView: WidgetUI(model: model))
         h.sizingOptions = []
+        h.wantsLayer = true
         h.frame = bounds
         h.autoresizingMask = [.width, .height]
         addSubview(h)
@@ -2365,6 +2414,21 @@ class WidgetView: NSView {
     }
     var fieldIsActive: Bool { window?.firstResponder is NSTextView }
     func focusField() { if let f = findField(host) { window?.makeFirstResponder(f) } }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        backLayer.frame = bounds
+        // el negro nunca se sale del contorno redondeado
+        backLayer.path = (model.attached ? AnyShape(EdgeShape(radius: 28, ear: edgeEar)) : AnyShape(RoundedRectangle(cornerRadius: 28, style: .continuous))).path(in: bounds).cgPath
+        CATransaction.commit()
+    }
+
+    /// Pegado al borde (modo esconder) o tarjeta flotante.
+    func setAttached(_ a: Bool) {
+        if model.attached != a { model.attached = a }
+        glow.attached = a
+    }
 
     func setVisible(_ v: Bool) {
         if model.visible != v { model.visible = v }
@@ -2489,7 +2553,8 @@ class WidgetView: NSView {
         sessions = all
         let order = ["attention": 0, "working": 1, "done": 2]
         let list = all.filter { order[$0.state] != nil }
-            .sorted { (order[$0.state]!, $1.date) < (order[$1.state]!, $0.date) }
+            // Orden estable: por estado y luego por proyecto (si fuera por la última actividad, las tarjetas saltarían sin parar)
+            .sorted { (order[$0.state]!, $0.project.lowercased(), $0.id) < (order[$1.state]!, $1.project.lowercased(), $1.id) }
         // Que quepa en la pantalla: si no hay sitio, primero se pliegan tarjetas y luego se muestran menos agentes
         let apps = model.showApps && !model.presentation
         var maxR = min(4, max(1, list.count)), hideR = false, hideU = false
@@ -2537,6 +2602,13 @@ class WidgetView: NSView {
 
 // MARK: - Escondido en el borde izquierdo
 /// Panel que puede colocarse fuera de la pantalla.
+/// La pestaña del borde: recibe clics y arrastre, pero nunca el teclado (si no, se lo quitaría a la app en la que escribes).
+final class TabPanelWindow: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
 final class EdgePanel: NSPanel {
     override var canBecomeKey: Bool { true }      // para poder escribir en el widget
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
@@ -2606,9 +2678,10 @@ final class TabView: NSView {
         blur.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
         let shade = NSView(frame: bounds)
         shade.wantsLayer = true
-        shade.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
+        shade.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.96).cgColor
         blur.addSubview(shade)
         addSubview(blur)
+        blur.layer?.borderColor = NSColor.white.withAlphaComponent(0.08).cgColor
         let host = NSHostingView(rootView: TabMascot(m: model))
         host.frame = bounds
         addSubview(host)
@@ -2848,7 +2921,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var outsideSince: Date?
     var edgeSince: Date?
     var edgeTimer: Timer?
-    var tabPanel: EdgePanel!
+    var tabPanel: TabPanelWindow!
+    /// La última app que tenía el teclado antes de Chispa: se le devuelve al recogerse.
+    var lastOtherApp: NSRunningApplication?
     var tabView: TabView!
 
     var disabled = false
@@ -2881,6 +2956,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // Seguir cuál era la última app con el teclado (que no sea Chispa)
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
+            if let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                self?.lastOtherApp = app
+            }
+        }
+        lastOtherApp = NSWorkspace.shared.frontmostApplication
         let W = WidgetView.W, H: CGFloat = 560
         panel = EdgePanel(contentRect: NSRect(x: 0, y: 0, width: W, height: H),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -2954,7 +3036,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         view.menu = menu
 
         // Pestaña del borde
-        tabPanel = EdgePanel(contentRect: NSRect(origin: .zero, size: TabView.size),
+        tabPanel = TabPanelWindow(contentRect: NSRect(origin: .zero, size: TabView.size),
                              styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         tabPanel.isOpaque = false
         tabPanel.backgroundColor = .clear
@@ -3162,7 +3244,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let vf = screenFrame()
         view.room = vf.height - 16
         let h = view.height
-        let x = !autoHide ? homeX : shown ? vf.minX + 10 : vf.minX - WidgetView.W - 24
+        let x = !autoHide ? homeX : shown ? vf.minX : vf.minX - WidgetView.W - 24
         // Nunca por debajo del borde de la pantalla: si no cabe desde donde está, sube
         let top = min(vf.maxY - 4, max(topY, vf.minY + 6 + h))
         return NSRect(x: x, y: top - h, width: WidgetView.W, height: h)
@@ -3175,16 +3257,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         // asomaría al deslizarse los escritorios cuando cambias de uno a otro.
         if hidden {
             if animated && panel.isVisible {
-                NSAnimationContext.runAnimationGroup({ c in
-                    c.duration = 0.32
-                    c.timingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1.0)
-                    panel.animator().setFrame(f, display: true)
-                }, completionHandler: { [weak self] in
+                morph(open: false) { [weak self] in
                     guard let self, self.autoHide, !self.shown else { return }
                     self.panel.orderOut(nil)
+                    self.giveFocusBack()
+                    self.view.layer?.mask = nil
+                    self.view.backLayer.opacity = 0
+                    self.panel.setFrame(f, display: false)
                     self.view.setVisible(false)
                     self.closePicker()
-                })
+                }
             } else {
                 panel.setFrame(f, display: false)
                 panel.orderOut(nil)
@@ -3192,7 +3274,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             }
         } else {
             view.setVisible(true)
-            if !panel.isVisible {
+            view.host.layer?.opacity = 1; view.glow.layer?.opacity = 1   // el contenido siempre visible al abrir (el fundido lo pone la animación)
+            if !panel.isVisible && autoHide && animated {
+                // Como el notch de Glance: la pestaña se infla hasta ser el widget
+                panel.setFrame(f, display: true)
+                view.layoutSubtreeIfNeeded()
+                morph(open: true)
+                panel.orderFrontRegardless()
+            } else if !panel.isVisible {
                 // vuelve a entrar desde el borde
                 var start = f; start.origin.x = screenFrame().minX - f.width - 24
                 panel.setFrame(start, display: false)
@@ -3216,12 +3305,118 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             if !tabPanel.isVisible {
                 tabPanel.alphaValue = 0
                 tabPanel.orderFrontRegardless()
-                NSAnimationContext.runAnimationGroup { c in c.duration = 0.35; tabPanel.animator().alphaValue = 1 }
+                DispatchQueue.main.asyncAfter(deadline: .now() + (animated ? 0.33 : 0)) { [weak self] in
+                    guard let self, self.autoHide, !self.shown else { return }
+                    NSAnimationContext.runAnimationGroup { c in c.duration = 0.06; self.tabPanel.animator().alphaValue = 1 }
+                }
             }
         } else if tabPanel.isVisible {
-            tabPanel.orderOut(nil)
+            if animated && autoHide {
+                // la pestaña se funde con la forma negra que sale de ella
+                NSAnimationContext.runAnimationGroup({ c in c.duration = 0.14; tabPanel.animator().alphaValue = 0 },
+                                                     completionHandler: { [weak self] in
+                    guard let self, self.shown else { return }
+                    self.tabPanel.orderOut(nil); self.tabPanel.alphaValue = 1
+                })
+            } else {
+                tabPanel.orderOut(nil)
+            }
         }
     }
+
+    /// La pestaña sale del borde y crece hasta ser el panel (abrir), o el panel vuelve a la pestaña (cerrar).
+    /// Primero se mueve una forma negra (como la propia pestaña) y el contenido aparece o se va con un fundido.
+    /// Si Chispa se había quedado con el teclado, vuelve a la app en la que estabas.
+    func giveFocusBack() {
+        guard NSApp.isActive else { return }
+        if let app = lastOtherApp, !app.isTerminated { app.activate() } else { NSApp.deactivate() }
+    }
+
+    func focusLog(_ where_: String) {
+        guard defaults.bool(forKey: "debugFit") else { return }
+        let line = "\(Date()) \(where_): activa=\(NSApp.isActive) panelKey=\(panel.isKeyWindow) tabKey=\(tabPanel.isKeyWindow) keyWin=\(NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "nil") delante=\(NSWorkspace.shared.frontmostApplication?.localizedName ?? "?")\n"
+        let f = cacheDir.appendingPathComponent("fit.log").path
+        if let h = FileHandle(forWritingAtPath: f) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile() } else { try? line.write(toFile: f, atomically: true, encoding: .utf8) }
+    }
+
+    func morph(open: Bool, completion: (() -> Void)? = nil) {
+        focusLog(open ? "abre-inicio" : "cierra-inicio")
+        view.wantsLayer = true
+        guard let layer = view.layer, let hostLayer = view.host.layer else { completion?(); return }
+        let glowLayer = view.glow.layer
+        let b = view.bounds
+        let pf = panel.frame
+        let tf = NSRect(x: screenFrame().minX, y: topY - 18 - TabView.size.height, width: TabView.size.width, height: TabView.size.height)
+        // Coordenadas de la vista (volteada: y hacia abajo)
+        var small = CGRect(x: tf.minX - pf.minX, y: pf.maxY - tf.maxY, width: tf.width, height: tf.height)
+        if small.minX < 0 { small.size.width += small.minX; small.origin.x = 0 }
+        small.origin.y = min(max(small.origin.y, 0), max(0, b.height - small.height))
+        // Misma forma que la pestaña: recta a la izquierda, redondeada a la derecha
+        // Las dos con la misma receta (mismos puntos): así la forma crece sin deformarse
+        let smallPath = EdgeShape(radius: 14, ear: 0.01).path(in: small).cgPath
+        let bigPath = EdgeShape(radius: 28, ear: edgeEar).path(in: b).cgPath
+        let mask = (layer.mask as? CAShapeLayer) ?? CAShapeLayer()
+        mask.frame = b
+        layer.mask = mask
+        let fromPath = mask.presentation()?.path ?? (open ? smallPath : bigPath)
+        let now = CACurrentMediaTime()
+        // La sombra de la ventana se calcula con su forma: durante la animación no hay sombra (si no, queda un "fantasma")
+        panel.hasShadow = false
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.setCompletionBlock { [weak self] in
+            guard let self else { completion?(); return }
+            self.focusLog(open ? "abre-fin" : "cierra-fin")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.focusLog("despues") }
+            if open && self.shown {
+                layer.mask = nil                        // abierto del todo: sin recorte
+                self.view.backLayer.opacity = 0
+                self.panel.hasShadow = !self.autoHide   // pegado al borde, como el notch: sin sombra de ventana
+                self.panel.invalidateShadow()
+            }
+            completion?()
+        }
+        view.backLayer.opacity = 1
+
+        // 1) la forma
+        let shape: CABasicAnimation
+        if open {
+            let sp = CASpringAnimation(keyPath: "path")
+            sp.mass = 1; sp.stiffness = 230; sp.damping = 2 * (230.0).squareRoot(); sp.initialVelocity = 0   // rápido y sin pasarse
+            sp.duration = sp.settlingDuration
+            shape = sp
+        } else {
+            let ba = CABasicAnimation(keyPath: "path")
+            ba.beginTime = now + 0.07
+            ba.duration = 0.30
+            ba.timingFunction = CAMediaTimingFunction(controlPoints: 0.5, 0, 0.75, 0.45)
+            ba.fillMode = .backwards
+            shape = ba
+        }
+        shape.fromValue = open && mask.animation(forKey: "morph") == nil ? smallPath : fromPath
+        shape.toValue = open ? bigPath : smallPath
+        mask.path = open ? bigPath : smallPath
+        mask.add(shape, forKey: "morph")
+
+        // 2) el contenido: aparece cuando la forma ya casi está, o se va antes de que se encoja
+        for l in [hostLayer, glowLayer].compactMap({ $0 }) {
+            let f = CABasicAnimation(keyPath: "opacity")
+            f.fromValue = open ? 0 : 1
+            f.toValue = open ? 1 : 0
+            f.beginTime = now + (open ? 0.16 : 0)
+            f.duration = open ? 0.22 : 0.10
+            f.fillMode = .backwards
+            l.opacity = open ? 1 : 0
+            l.add(f, forKey: "fundido")
+        }
+        CATransaction.commit()
+        if open {
+            // al volver a abrir, el contenido tiene que estar visible
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { hostLayer.opacity = 1; glowLayer?.opacity = 1 }
+        }
+    }
+    var model_attached: Bool { view.model.attached }
 
     var hotKeyRef: EventHotKeyRef?
     func registerHotKey() {
@@ -3257,6 +3452,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     func applyAutoHideMode() {
+        view.setAttached(autoHide)
+        panel.hasShadow = !autoHide
+        panel.invalidateShadow()
         edgeTimer?.invalidate(); edgeTimer = nil
         shown = true
         if autoHide {
@@ -3881,6 +4079,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine
     m.perDay = [5, 11, 23, 20, 1, 65, 59]
     m.statsLoaded = true
     m.usageEnabled = scenario != "sinuso"
+    m.attached = CommandLine.arguments.contains("-pegada")
     if scenario == "uso" { m.usagePick = "s" }
     if scenario == "update" { m.updateVersion = "2.5" }
     m.usage = [UsageVM(id: "s", label: "Sesión", left: 0.57, detail: "en 34 min", tip: scenario == "uso" ? "Te queda el 57 % de la sesión (5 h). Se reinicia el mié 25 a las 6:10" : "", timeLeft: 0.11),

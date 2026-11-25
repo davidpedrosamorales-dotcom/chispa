@@ -17,7 +17,7 @@ Un widget para el escritorio del Mac que te enseña, de un vistazo, qué están 
 - **Pídele algo a Claude**: escribe una petición y se abre un agente nuevo en la carpeta que elijas. Atajo global: **⌃⌥C**.
 - **Resultados**: tareas resueltas hoy y en la semana, y un **informe semanal** en HTML listo para guardar como PDF.
 - **Sistema**: CPU, memoria (y qué apps la usan), disco, batería y un botón para que el Mac no se duerma con la tapa cerrada.
-- **Se esconde en el borde** de la pantalla, donde la mascota sigue a la vista: duerme, trabaja, salta si un agente te necesita y celebra cuando termina. Pasa el ratón o haz clic para abrir el widget; arrastra la pestaña para cambiarla de altura.
+- **Se esconde en el borde** de la pantalla, donde la mascota sigue a la vista: duerme, trabaja, salta si un agente te necesita y celebra cuando termina. Pasa el ratón o haz clic y la pestaña se despliega en un panel negro pegado al borde; al apartar el ratón vuelve a recogerse. Arrastra la pestaña para cambiarla de altura.
 - **Modo presentación** y proyectos privados, para enseñarlo sin enseñar nombres.
 
 ## Requisitos
