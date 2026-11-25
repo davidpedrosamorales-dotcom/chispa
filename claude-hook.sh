@@ -7,7 +7,9 @@ input=$(cat)
 # Valor de texto del JSON por su ruta (p. ej. tool_input.file_path). plutil entiende JSON y respeta las comillas escapadas.
 field() { printf '%s' "$input" | /usr/bin/plutil -extract "$1" raw -o - - 2>/dev/null | head -1 }
 sid=$(field session_id)
-[[ -z "$sid" ]] && exit 0
+# Solo letras, números y guiones: el id se usa como nombre de archivo
+setopt extendedglob
+[[ "$sid" == [A-Za-z0-9-]## ]] || exit 0
 file="$dir/$sid"
 if [[ "$1" == end ]]; then rm -f "$file"; exit 0; fi
 

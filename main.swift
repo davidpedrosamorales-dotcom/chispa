@@ -14,6 +14,8 @@ var projectsURL: URL {
     return home.appendingPathComponent("Documents/Proyectos Claude")
 }
 var projectsName: String { projectsURL.lastPathComponent }
+/// El código de Chispa, si está en la carpeta de proyectos (para «Editar Chispa»).
+var ownSourceURL: URL { projectsURL.appendingPathComponent("Chispa") }
 
 // MARK: - pmset
 func isSleepDisabled() -> Bool {
@@ -274,7 +276,7 @@ func launchClaude(in dir: URL, continueLast: Bool, prompt: String? = nil) {
         guard (try? prompt.write(to: pf, atomically: true, encoding: .utf8)) != nil else { return }
         let pq = "'" + pf.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
         pre = "export WIDGET_PROMPT=\"$(cat \(pq))\"\nrm -f \(pq)\n"
-        cmd = "claude \"$WIDGET_PROMPT\""
+        cmd = "claude -- \"$WIDGET_PROMPT\""
     }
     let script = "#!/bin/zsh\nrm -f \"$0\"\ncd \(q)\n\(pre)clear\nexec zsh -lic '\(cmd)'\n"
     do {
@@ -675,7 +677,7 @@ func buildWeeklyReport(_ sessions: [SessionReport], previousWeekTasks: Int = 0) 
     @media print{.tools,.rm{display:none}.page{padding:14px;max-width:none}.summary:empty{display:none}.orb{animation:none}
       .card,.proj,.in,.summary,figure,.hero{break-inside:avoid}*{-webkit-print-color-adjust:exact;print-color-adjust:exact;animation:none!important}}
     </style></head><body><div class="page">
-    <div class="tools"><button onclick="window.print()">Guardar como PDF</button><span>Puedes editar o borrar cualquier texto antes de guardar. Nada de esto sale de tu Mac.</span></div>
+    <div class="tools"><button onclick="window.print()">Guardar como PDF</button><span>Antes de compartirlo, revisa tu nombre, los proyectos y las capturas: puedes editar o quitar lo que quieras. Nada de esto sale de tu Mac.</span></div>
     <section class="hero a">
       <div class="orb o1"></div><div class="orb o2"></div><div class="orb o3"></div>
       <div class="top">
@@ -2311,16 +2313,53 @@ final class EdgePanel: NSPanel {
 }
 
 /// Pestañita que queda en el borde cuando el widget está escondido: color del estado y nº de agentes activos.
+/// Lo que enseña la pestañita del borde.
+final class TabModel: ObservableObject {
+    @Published var mood = "idle"        // idle · work · att · done
+    @Published var working = 0
+    @Published var partyAt: Date? = nil
+    @Published var visible = false
+    var renderT: Double = 0.9           // solo para --render-tab
+    var renderNow = Date()
+}
+
+/// La mascota en pequeño. Al terminar una tarea celebra y vuelve a su reposo, sin abrir el widget.
+struct TabMascot: View {
+    @ObservedObject var m: TabModel
+    static let mascotSize = CGSize(width: 76, height: 100)
+    static let scale: CGFloat = 0.44
+    func shownMood(_ now: Date) -> String {
+        m.mood == "done" ? "idle" : m.mood          // terminado → vuelve al reposo
+    }
+    func mascot(t: Double, now: Date) -> some View {
+        Mascot(mood: shownMood(now), t: t, party: m.partyAt.map { now.timeIntervalSince($0) }.flatMap { $0 < 3 ? $0 : nil })
+            .frame(width: Self.mascotSize.width, height: Self.mascotSize.height)
+            .scaleEffect(Self.scale)
+            .frame(width: Self.mascotSize.width * Self.scale, height: Self.mascotSize.height * Self.scale)
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            Group {
+                if m.visible {
+                    let partying = m.partyAt.map { Date().timeIntervalSince($0) < 3 } ?? false
+                    TimelineView(.animation(minimumInterval: partying ? 1.0 / 24 : m.mood == "idle" ? 1.0 / 5 : 1.0 / 12)) { ctx in
+                        mascot(t: ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3600), now: ctx.date)
+                    }
+                } else {
+                    mascot(t: m.renderT, now: m.renderNow)
+                }
+            }
+            Text(m.working > 0 ? "\(m.working)" : " ")
+                .font(.system(size: 11, weight: .bold, design: .rounded)).foregroundColor(.white)
+                .frame(height: 14)
+        }
+        .frame(width: TabView.size.width, height: TabView.size.height, alignment: .center)
+    }
+}
+
 final class TabView: NSView {
-    static let size = NSSize(width: 26, height: 70)
-    private let count = NSTextField(labelWithString: "")
-    private let halo = CALayer()
-    private let track = CAShapeLayer()
-    private let arc = CAShapeLayer()
-    private let core = CALayer()
-    private let disc = CALayer()
-    private let mark = NSImageView()
-    private var key = ""
+    static let size = NSSize(width: 38, height: 64)
+    let model = TabModel()
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -2329,7 +2368,7 @@ final class TabView: NSView {
         blur.material = .hudWindow; blur.state = .active; blur.blendingMode = .behindWindow
         blur.appearance = NSAppearance(named: .vibrantDark)
         blur.wantsLayer = true
-        blur.layer?.cornerRadius = 12
+        blur.layer?.cornerRadius = 14
         blur.layer?.cornerCurve = .continuous
         blur.layer?.maskedCorners = [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
         blur.layer?.masksToBounds = true
@@ -2340,66 +2379,19 @@ final class TabView: NSView {
         shade.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.55).cgColor
         blur.addSubview(shade)
         addSubview(blur)
-
-        // Mini orbe: el mismo de las tarjetas, en pequeño
-        let orb = NSView(frame: NSRect(x: 2, y: 9, width: 22, height: 22))
-        orb.wantsLayer = true
-        let r = orb.bounds
-        halo.frame = r.insetBy(dx: -1, dy: -1); halo.cornerRadius = halo.frame.width / 2
-        let ring = CGPath(ellipseIn: r.insetBy(dx: 3, dy: 3), transform: nil)
-        for l in [track, arc] {
-            l.frame = r; l.path = ring; l.fillColor = nil; l.lineWidth = 2.2; l.lineCap = .round
-        }
-        track.strokeColor = NSColor.white.withAlphaComponent(0.14).cgColor
-        arc.strokeEnd = 0.68
-        core.frame = NSRect(x: r.midX - 3.5, y: r.midY - 3.5, width: 7, height: 7); core.cornerRadius = 3.5
-        [halo, track, arc, core].forEach { orb.layer?.addSublayer($0) }
-        disc.frame = r.insetBy(dx: 3, dy: 3); disc.cornerRadius = disc.frame.width / 2
-        orb.layer?.addSublayer(disc)
-        mark.frame = r
-        mark.imageScaling = .scaleNone
-        orb.addSubview(mark)
-        addSubview(orb)
-
-        count.font = .systemFont(ofSize: 11, weight: .bold)
-        count.textColor = .white
-        count.alignment = .center
-        count.frame = NSRect(x: 0, y: 39, width: frame.width, height: 15)
-        addSubview(count)
+        let host = NSHostingView(rootView: TabMascot(m: model))
+        host.frame = bounds
+        addSubview(host)
     }
     required init?(coder: NSCoder) { fatalError() }
 
     func set(mood: String, working: Int) {
-        count.stringValue = working > 0 ? "\(working)" : ""
-        guard mood != key else { return }
-        key = mood
-        let c: NSColor = mood == "att" ? NSColor(red: 1.0, green: 0.33, blue: 0.30, alpha: 1) : mood == "work" ? claudeOrange
-            : mood == "done" ? NSColor(red: 0.30, green: 0.85, blue: 0.50, alpha: 1) : NSColor.white.withAlphaComponent(0.35)
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        [halo, arc, core].forEach { $0.removeAllAnimations() }
-        halo.backgroundColor = c.withAlphaComponent(mood == "idle" ? 0 : 0.22).cgColor
-        arc.strokeColor = c.cgColor
-        arc.isHidden = mood != "work"
-        track.isHidden = mood == "att" || mood == "done"
-        core.isHidden = mood == "att" || mood == "done"
-        core.backgroundColor = c.cgColor
-        disc.backgroundColor = c.cgColor
-        disc.isHidden = !(mood == "att" || mood == "done")
-        mark.image = mood == "att" ? symbol("exclamationmark", 10, .heavy, color: .white)
-            : mood == "done" ? symbol("checkmark", 9, .heavy, color: NSColor.black.withAlphaComponent(0.75)) : nil
-        CATransaction.commit()
-        if mood == "work" {
-            let spin = CABasicAnimation(keyPath: "transform.rotation.z")
-            spin.fromValue = 0; spin.toValue = 2 * Double.pi; spin.duration = 1.5; spin.repeatCount = .infinity
-            arc.add(spin, forKey: "spin")
-        }
-        if mood == "work" || mood == "att" {
-            let a = CABasicAnimation(keyPath: "opacity")
-            a.fromValue = 1; a.toValue = 0.25; a.duration = mood == "att" ? 0.45 : 1.0
-            a.autoreverses = true; a.repeatCount = .infinity
-            halo.add(a, forKey: "pulse")
-        }
+        if model.working != working { model.working = working }
+        if model.mood != mood { model.mood = mood }
     }
+    func celebrate() { model.partyAt = Date() }
+    /// Solo se anima mientras se ve.
+    func setVisible(_ v: Bool) { if model.visible != v { model.visible = v } }
 }
 
 // MARK: - App
@@ -2680,13 +2672,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                 if s.state == "attention" { notify("Claude te necesita", "Está esperando tu permiso en \(where_)") }
             }
         }
-        // Si está escondido, asoma solo cuando un agente termina o te necesita
-        if claudeInitialized && sessions.contains(where: { ($0.state == "done" || $0.state == "attention") && prevClaude[$0.id] != $0.state }) {
-            reveal(for: 5)
-        }
+        // Escondido, ya no se abre: lo cuenta la mascota de la pestañita
         // Al terminar una tarea, los resultados se actualizan al momento
         if claudeInitialized, let s = sessions.first(where: { $0.state == "done" && prevClaude[$0.id] != "done" }) {
             view.celebrate(presentation && isPrivate(s) ? "" : s.project)
+            tabView.celebrate()
             if doneSound { NSSound(named: "Glass")?.play() }
             // la tarea tarda un instante en quedar escrita en la sesión
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in self?.refreshStats() }
@@ -2768,6 +2758,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         // Pestaña: solo cuando está escondido
         let vf = screenFrame()
         tabPanel.setFrame(NSRect(x: vf.minX, y: topY - 18 - TabView.size.height, width: TabView.size.width, height: TabView.size.height), display: true)
+        tabView.setVisible(hidden)
         if hidden {
             if !tabPanel.isVisible {
                 tabPanel.alphaValue = 0
@@ -2877,7 +2868,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if !showUsage {
             let a = NSAlert()
             a.messageText = "¿Mostrar lo que te queda de Claude?"
-            a.informativeText = "Para saberlo, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso) y pregunta a Anthropic cuánto uso te queda. Es una función no oficial: puede dejar de funcionar sin aviso. Tu sesión no se guarda ni se envía a ningún otro sitio."
+            a.informativeText = "Para saberlo, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa «Permitir», no «Permitir siempre») y pregunta a Anthropic cuánto uso te queda. Es una función no oficial: puede dejar de funcionar sin aviso. Tu sesión no se guarda ni se envía a ningún otro sitio."
             a.addButton(withTitle: "Mostrar"); a.addButton(withTitle: "Cancelar")
             NSApp.activate(ignoringOtherApps: true)
             guard a.runModal() == .alertFirstButtonReturn else { return }
@@ -3013,7 +3004,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                              current: p.url.path == projectPath, root: p.url.path == projectsURL.path)
         }
         m.pickQuery = ""
-        m.canEditSelf = isDir(home.appendingPathComponent("Applications/Chispa-src"))
+        m.canEditSelf = FileManager.default.fileExists(atPath: ownSourceURL.appendingPathComponent("main.swift").path)
         withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { m.picking = true }
     }
 
@@ -3057,7 +3048,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         func isOurs(_ cmd: String) -> Bool { cmd.contains("Chispa") && cmd.contains("claude-hook.sh") }
         var present = 0, changed = false
         for w in wanted {
-            let cmd = "'\(script)' \(w.state)"
+            let cmd = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "' \(w.state)"
             var entries = hooks[w.event] as? [[String: Any]] ?? []
             var found = false
             for i in entries.indices {
@@ -3093,8 +3084,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         guard let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) else { return }
         if fm.fileExists(atPath: file.path) {
             let backup = file.deletingLastPathComponent().appendingPathComponent("settings.json.antes-chispa")
-            try? fm.removeItem(at: backup)
-            try? fm.copyItem(at: file, to: backup)
+            if !fm.fileExists(atPath: backup.path) { try? fm.copyItem(at: file, to: backup) }   // solo la primera vez
         }
         try? out.write(to: file, options: .atomic)
     }
@@ -3102,7 +3092,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     @objc func connectClaude() { defaults.set(false, forKey: "hooksAsked"); ensureClaudeHooks(askIfMissing: false) }
 
     @objc func openOwnProject() {
-        launchClaude(in: home.appendingPathComponent("Applications/Chispa-src"), continueLast: false)
+        launchClaude(in: ownSourceURL, continueLast: false)
     }
 
     @objc func pickProject(_ sender: NSMenuItem) {
@@ -3234,30 +3224,26 @@ if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine
 
 // `Chispa --render-tab salida.png` dibuja la pestañita en sus cuatro estados
 if let i = CommandLine.arguments.firstIndex(of: "--render-tab"), i + 1 < CommandLine.arguments.count {
-    let moods = ["idle", "work", "att", "done"]
-    let sz = TabView.size, scale: CGFloat = 4, gap: CGFloat = 14
-    let W = Int((gap + (sz.width + gap) * CGFloat(moods.count)) * scale), H = Int((sz.height + 2 * gap) * scale)
-    let ctx = CGContext(data: nil, width: W, height: H, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
-                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    ctx.setFillColor(NSColor(red: 0.42, green: 0.36, blue: 0.50, alpha: 1).cgColor)
-    ctx.fill(CGRect(x: 0, y: 0, width: W, height: H))
-    ctx.scaleBy(x: scale, y: scale)
-    for (k, mood) in moods.enumerated() {
-        let v = TabView(frame: NSRect(origin: .zero, size: sz))
-        v.set(mood: mood, working: mood == "work" ? 2 : mood == "att" ? 1 : 0)
-        let win = NSWindow(contentRect: NSRect(origin: .zero, size: sz), styleMask: .borderless, backing: .buffered, defer: false)
-        win.contentView = v
-        v.layoutSubtreeIfNeeded(); win.displayIfNeeded(); CATransaction.flush()
-        ctx.saveGState()
-        ctx.translateBy(x: gap + CGFloat(k) * (sz.width + gap), y: gap + sz.height)
-        ctx.scaleBy(x: 1, y: -1)
-        ctx.setFillColor(NSColor(white: 0.08, alpha: 1).cgColor)
-        ctx.fill(CGRect(origin: .zero, size: sz))
-        v.layer?.render(in: ctx)
-        ctx.restoreGState()
+    // reposo · trabajando · te necesita · celebrando · después de terminar
+    let now = Date()
+    let cases: [(String, Int, Double?, Double)] = [("idle", 0, nil, 1.0), ("work", 2, nil, 0.9), ("att", 1, nil, 0.25), ("done", 0, 0.45, 0.4), ("done", 0, nil, 2.0)]
+    let row = HStack(spacing: 14) {
+        ForEach(Array(cases.enumerated()), id: \.offset) { _, c in
+            let m: TabModel = { let m = TabModel(); m.mood = c.0; m.working = c.1; m.partyAt = c.2.map { now.addingTimeInterval(-$0) }; m.renderT = c.3; m.renderNow = now; return m }()
+            TabMascot(m: m)
+                .background(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 14, topTrailingRadius: 14, style: .continuous)
+                    .fill(Color(white: 0.09)).overlay(UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 0, bottomTrailingRadius: 14, topTrailingRadius: 14, style: .continuous).stroke(Color.white.opacity(0.14))))
+        }
     }
-    if let img = ctx.makeImage(), let png = NSBitmapImageRep(cgImage: img).representation(using: .png, properties: [:]) {
-        try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+    .padding(14)
+    .background(Color(red: 0.42, green: 0.36, blue: 0.50))
+    MainActor.assumeIsolated {
+        let r = ImageRenderer(content: row)
+        r.scale = 4
+        if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+        }
     }
     exit(0)
 }

@@ -52,8 +52,8 @@ Todo lo demás está en el menú del **clic derecho** sobre el widget.
 ## Privacidad
 
 - Chispa lee los registros que Claude Code guarda en tu Mac (`~/.claude/projects`) para contar tareas y tiempo. **Nada sale de tu ordenador.**
-- El informe semanal se genera en local, en `~/Documents/Informes Claude`.
-- **Opcional y apagado por defecto**: «Mostrar lo que te queda de Claude (experimental)». Si lo activas, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso) para preguntar a Anthropic cuánto uso te queda. Usa una función no documentada, así que puede dejar de funcionar en cualquier momento.
+- El informe semanal se genera en local, en `~/Documents/Informes Claude`. Lleva tu nombre y los nombres de tus proyectos: revísalo antes de compartirlo (puedes editar el texto y quitar proyectos).
+- **Opcional y apagado por defecto**: «Mostrar lo que te queda de Claude (experimental)». Si lo activas, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa **Permitir**, no «Permitir siempre», para que ningún otro programa pueda leerla sin preguntarte) para preguntar a Anthropic cuánto uso te queda. Usa una función no documentada, así que puede dejar de funcionar en cualquier momento.
 
 ## Desinstalar
 
