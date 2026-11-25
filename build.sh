@@ -14,5 +14,5 @@ cp Info.plist build/Chispa.app/Contents/
 cp claude-hook.sh build/Chispa.app/Contents/Resources/
 chmod +x build/Chispa.app/Contents/Resources/claude-hook.sh
 codesign -s - --force --identifier local.chispa build/Chispa.app
-(cd build && ditto -c -k --norsrc --noextattr --keepParent Chispa.app Chispa.zip)
-echo "Listo: build/Chispa.app  (y build/Chispa.zip para publicar)"
+(cd build && ditto -c -k --norsrc --noextattr --keepParent Chispa.app Chispa.zip && shasum -a 256 Chispa.zip > Chispa.zip.sha256)
+echo "Listo: build/Chispa.app  (y build/Chispa.zip + Chispa.zip.sha256 para publicar)"

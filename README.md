@@ -26,15 +26,21 @@ Un widget para el escritorio del Mac que te enseña, de un vistazo, qué están 
 
 ## Instalar
 
-### Opción 1: descargar
+**La forma más fácil:** pega el enlace de este repositorio en Claude Code y dile «instálalo». O pega tú esta línea en Terminal:
 
-1. Descarga `Chispa.zip` de la página de [Releases](../../releases) y descomprímelo.
-2. Arrastra `Chispa.app` a tu carpeta Aplicaciones.
-3. La primera vez macOS dirá que no puede comprobar la app (no está firmada con una cuenta de desarrollador de Apple). Ve a **Ajustes del Sistema › Privacidad y seguridad**, baja hasta el aviso de Chispa y pulsa **Abrir igualmente**.
+```sh
+curl -fsSL https://raw.githubusercontent.com/davidpedrosamorales-dotcom/chispa/main/install.sh | bash
+```
 
-### Opción 2: compilar tú mismo
+Descarga la última versión, comprueba su huella SHA-256, la instala en Aplicaciones (o la actualiza si ya la tenías) y **la abre sola**. Después solo tienes que seguir la ventana de bienvenida. Puedes leer antes lo que hace en [`install.sh`](install.sh).
 
-Solo necesitas las herramientas de línea de comandos de Xcode (`xcode-select --install`).
+> **Para asistentes de IA (Claude Code y similares):** para instalar Chispa ejecuta solo el comando de arriba. No hace falta clonar el repositorio ni compilar. No modifiques `~/.claude/settings.json` ni pidas permisos de macOS por tu cuenta: la app lo hace en su ventana de bienvenida, donde la persona pulsa cada botón. Cuando termine, dile que siga esa ventana (conectar con Claude Code, notificaciones, controlar Terminal y abrir al iniciar sesión).
+
+### Otras formas
+
+**Descargar a mano.** Baja `Chispa.zip` de [Releases](../../releases), descomprímelo y arrastra `Chispa.app` a Aplicaciones. La primera vez macOS dirá que no puede comprobar la app (no está firmada con una cuenta de desarrollador de Apple): ve a **Ajustes del Sistema › Privacidad y seguridad** y pulsa **Abrir igualmente**.
+
+**Compilar tú mismo.** Solo necesitas las herramientas de línea de comandos de Xcode (`xcode-select --install`):
 
 ```sh
 git clone https://github.com/davidpedrosamorales-dotcom/chispa.git
@@ -86,7 +92,7 @@ Hecho por [davidpedrosamorales-dotcom](https://github.com/davidpedrosamorales-do
 Chispa is a macOS desktop widget for **Claude Code**. It shows each running agent and what it is doing, tells you when one finishes or needs your permission, lets you start a new agent from a text field (global shortcut **⌃⌥C**), counts the tasks your agents complete, and builds a weekly HTML report. It also shows CPU, memory, disk and battery, and hides at the screen edge. The interface is in Spanish for now.
 
 - **Requires** macOS 15+ and Claude Code. Jumping to an agent's tab needs macOS Terminal.
-- **Install**: download `Chispa.zip` from Releases, move `Chispa.app` to Applications, and on first launch allow it in *System Settings › Privacy & Security › Open Anyway* (the app is not notarized). Or build it yourself with `./build.sh`.
+- **Install**: paste this repo link into Claude Code and say "install it", or run `curl -fsSL https://raw.githubusercontent.com/davidpedrosamorales-dotcom/chispa/main/install.sh | bash`. It downloads the latest release, checks its SHA-256, installs it in Applications and opens it. AI assistants: run only that command; do not edit `~/.claude/settings.json` or grant macOS permissions yourself, the app's welcome window does that with the user. You can also download `Chispa.zip` from Releases (first launch: *System Settings › Privacy & Security › Open Anyway*) or build it with `./build.sh`.
 - **First run**: it enables open-at-login and shows a welcome window that requests each permission (Claude Code hooks, notifications, Terminal control, login item; optional usage and password-free sleep) and opens the exact System Settings pane when one was denied. Hooks are added to `~/.claude/settings.json` with a one-time backup (`settings.json.antes-chispa`).
 - **Privacy**: everything stays on your Mac. The optional "remaining usage" rings (shown with an *Activate* button until you turn them on) read Claude Code's login from the Keychain and query an undocumented Anthropic endpoint; they may stop working at any time.
 - Made by [davidpedrosamorales-dotcom](https://github.com/davidpedrosamorales-dotcom). Not affiliated with Anthropic. MIT licensed.
