@@ -203,7 +203,39 @@ func readDisk() -> (free: Int64, total: Int64)? {
 struct UsageLimit { let name: String; let percent: Double; let resetsAt: Date? }
 
 /// Lee el token de Claude Code del Llavero (no lo renueva: eso lo hace Claude Code) y pide el uso a Anthropic.
-func fetchClaudeUsage(_ done: @escaping ([String: UsageLimit]?) -> Void) {
+func usageLog(_ msg: String) {
+    guard UserDefaults.standard.bool(forKey: "debugFit") else { return }
+    let line = "\(Date()) uso: \(msg)\n"
+    let f = cacheDir.appendingPathComponent("fit.log").path
+    if let h = FileHandle(forWritingAtPath: f) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile() }
+}
+
+/// Entiende la respuesta de uso de Anthropic (también la guardada en disco).
+func parseUsage(_ data: Data, now: Date = Date()) -> [String: UsageLimit]? {
+    guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let limits = j["limits"] as? [[String: Any]] else { return nil }
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let isoPlain = ISO8601DateFormatter()
+    var m: [String: UsageLimit] = [:]
+    for l in limits {
+        let kind = l["kind"] as? String ?? ""
+        var pct = (l["percent"] as? NSNumber)?.doubleValue ?? 0
+        var reset = (l["resets_at"] as? String).flatMap { iso.date(from: $0) ?? isoPlain.date(from: $0) }
+        if let r = reset, r < now { pct = 0; reset = nil }      // dato guardado de un periodo que ya se renovó
+        let model = ((l["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String
+        // Sesión y semana siempre; otro límite solo si Anthropic dice de qué modelo es (si no, no se sabría qué nombre ponerle)
+        guard let key = kind == "session" ? "session" : kind == "weekly_all" ? "weekly" : model else { continue }
+        m[key] = UsageLimit(name: model ?? key, percent: pct, resetsAt: reset)
+    }
+    return m.isEmpty ? nil : m
+}
+
+let usageCacheFile = cacheDir.appendingPathComponent("uso.json")
+
+/// Lee el token de Claude Code del Llavero (no lo renueva: eso lo hace Claude Code) y pide el uso a Anthropic.
+/// `wait` es cuánto esperar antes de volver a preguntar si Anthropic pide calma (429).
+func fetchClaudeUsage(_ done: @escaping (_ usage: [String: UsageLimit]?, _ wait: TimeInterval?) -> Void) {
     DispatchQueue.global(qos: .utility).async {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
@@ -214,31 +246,26 @@ func fetchClaudeUsage(_ done: @escaping ([String: UsageLimit]?) -> Void) {
         try? p.run()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
+        usageLog("llavero salida=\(p.terminationStatus) bytes=\(data.count)")
         guard let cred = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = cred["claudeAiOauth"] as? [String: Any],
-              let token = oauth["accessToken"] as? String else { return DispatchQueue.main.async { done(nil) } }
+              let token = oauth["accessToken"] as? String else { return DispatchQueue.main.async { done(nil, nil) } }
         var req = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/usage")!, timeoutInterval: 15)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         URLSession.shared.dataTask(with: req) { data, resp, _ in
-            var out: [String: UsageLimit]?
-            if (resp as? HTTPURLResponse)?.statusCode == 200, let data,
-               let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let limits = j["limits"] as? [[String: Any]] {
-                let iso = ISO8601DateFormatter()
-                iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-                var m: [String: UsageLimit] = [:]
-                for l in limits {
-                    let kind = l["kind"] as? String ?? ""
-                    let pct = (l["percent"] as? NSNumber)?.doubleValue ?? 0
-                    let reset = (l["resets_at"] as? String).flatMap { iso.date(from: $0) }
-                    let model = ((l["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String
-                    let key = kind == "session" ? "session" : kind == "weekly_all" ? "weekly" : model ?? kind
-                    m[key] = UsageLimit(name: model ?? key, percent: pct, resetsAt: reset)
-                }
+            let http = resp as? HTTPURLResponse
+            usageLog("api http=\(http?.statusCode ?? -1) bytes=\(data?.count ?? 0)")
+            var out: [String: UsageLimit]?, wait: TimeInterval?
+            if http?.statusCode == 200, let data, let m = parseUsage(data) {
                 out = m
+                try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+                try? data.write(to: usageCacheFile, options: .atomic)   // para enseñarlo al volver a abrir
+            } else if http?.statusCode == 429 {
+                let ra = (http?.value(forHTTPHeaderField: "Retry-After")).flatMap { Double($0) } ?? 300
+                wait = min(max(ra, 120), 1800)
             }
-            DispatchQueue.main.async { done(out) }
+            DispatchQueue.main.async { done(out, wait) }
         }.resume()
     }
 }
@@ -2456,6 +2483,7 @@ class WidgetView: NSView {
     }
 
     func refit() { updateClaude(sessions) }
+    private var lastFitLog = ""
 
     func updateClaude(_ all: [ClaudeSession]) {
         sessions = all
@@ -2476,6 +2504,13 @@ class WidgetView: NSView {
         if apps { steps.append { hideU = true } }
         steps += [{ maxR = min(maxR, 2) }, { hideU = true }, { hideR = true }, { maxR = 1 }]
         for step in steps where est() > room { step() }
+        if ProcessInfo.processInfo.environment["CHISPA_DEBUG"] != nil || UserDefaults.standard.bool(forKey: "debugFit") {
+            let key = "agentes=\(list.count) maxR=\(maxR) est=\(Int(est())) room=\(Int(room)) hideR=\(hideR) hideU=\(hideU) usageEnabled=\(model.usageEnabled) apps=\(apps)"
+            let line = "\(Date()) \(key)\n"
+            if key != lastFitLog, let h = FileHandle(forWritingAtPath: cacheDir.appendingPathComponent("fit.log").path) { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile() }
+            else if key != lastFitLog { try? line.write(to: cacheDir.appendingPathComponent("fit.log"), atomically: true, encoding: .utf8) }
+            lastFitLog = key
+        }
         if model.hideResults != hideR || model.hideUsage != hideU {
             withAnimation(.easeInOut(duration: 0.25)) { model.hideResults = hideR; model.hideUsage = hideU }
         }
@@ -2823,6 +2858,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var claudeInitialized = false
     var lastUsage: [String: UsageLimit]?
     var lastUsageFetch = Date.distantPast
+    var usageWaitUntil = Date.distantPast
+    /// Los últimos datos buenos guardados en disco: se enseñan al abrir mientras llega la respuesta nueva.
+    lazy var savedUsage: [String: UsageLimit]? = (try? Data(contentsOf: usageCacheFile)).flatMap { parseUsage($0) }
     var lastDiskCheck = Date.distantPast
     let launchedAt = Date()
     let statsReader = WorkStatsReader()
@@ -3051,13 +3089,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             defaults.set(Date().timeIntervalSince1970, forKey: "lastUpdateCheck")
             lookForUpdate()
         }
+        if showUsage && lastUsage == nil, let saved = savedUsage { lastUsage = saved; view.updateUsage(saved) }
         if !showUsage {
             // apagado: no se consulta nada
-        } else if Date().timeIntervalSince(lastUsageFetch) >= 120 {
+        } else if Date().timeIntervalSince(lastUsageFetch) >= 180 && Date() >= usageWaitUntil {
             lastUsageFetch = Date()
-            fetchClaudeUsage { [weak self] u in
+            fetchClaudeUsage { [weak self] u, wait in
                 guard let self else { return }
-                if u != nil || self.lastUsage == nil { self.lastUsage = u }   // si falla, conserva lo último
+                if let wait { self.usageWaitUntil = Date().addingTimeInterval(wait) }   // Anthropic pide calma
+                if u != nil { self.lastUsage = u }                                       // si falla, conserva lo último
                 self.view.updateUsage(self.lastUsage)
             }
         } else if lastUsage != nil {
