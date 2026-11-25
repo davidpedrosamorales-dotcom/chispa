@@ -15,7 +15,7 @@ Un widget para el escritorio del Mac que te enseña, de un vistazo, qué están 
 - **Pídele algo a Claude**: escribe una petición y se abre un agente nuevo en la carpeta que elijas. Atajo global: **⌃⌥C**.
 - **Resultados**: tareas resueltas hoy y en la semana, y un **informe semanal** en HTML listo para guardar como PDF.
 - **Sistema**: CPU, memoria (y qué apps la usan), disco, batería y un botón para que el Mac no se duerma con la tapa cerrada.
-- **Se esconde en el borde** de la pantalla y vuelve al pasar el ratón.
+- **Se esconde en el borde** de la pantalla, donde la mascota sigue a la vista: duerme, trabaja, salta si un agente te necesita y celebra cuando termina. Pasa el ratón o haz clic para abrir el widget; arrastra la pestaña para cambiarla de altura.
 - **Modo presentación** y proyectos privados, para enseñarlo sin enseñar nombres.
 
 ## Requisitos
@@ -45,9 +45,14 @@ open build/Chispa.app
 
 ## La primera vez
 
-Chispa te pedirá permiso para **conectarse con Claude Code**: añade unos *hooks* a `~/.claude/settings.json` para que Claude Code le avise de cuándo empieza, termina o espera tu permiso. Antes de tocar nada guarda una copia en `~/.claude/settings.json.antes-chispa`. Si mueves la app de sitio, corrige la ruta sola.
+Chispa se activa sola para **abrirse al iniciar sesión** (macOS lo avisa; se puede quitar en el menú) y te enseña una ventana de **bienvenida** con lo que necesita. Cada fila tiene un botón: si macOS pregunta, acepta; si un permiso ya se denegó, el botón te lleva al sitio exacto de Ajustes del Sistema, y la fila se pone en verde sola.
 
-Todo lo demás está en el menú del **clic derecho** sobre el widget.
+- **Conectar con Claude Code**: añade unos *hooks* a `~/.claude/settings.json` para que Claude Code le avise de cuándo empieza, termina o espera tu permiso. La primera vez guarda una copia en `~/.claude/settings.json.antes-chispa`. Si mueves la app de sitio, corrige la ruta sola.
+- **Notificaciones** y **controlar Terminal** (para llevarte a la pestaña del agente).
+- **Abrir al iniciar sesión**.
+- Opcional: **lo que te queda de Claude** y **reposo sin contraseña** (crea una regla en `/etc/sudoers.d/chispa` que solo permite activar o quitar el reposo; te pide la contraseña de administrador una vez).
+
+Puedes volver a esa ventana cuando quieras: **clic derecho** en el widget › **Permisos y configuración…**. Todo lo demás también está en ese menú.
 
 ## Privacidad
 
@@ -59,7 +64,8 @@ Todo lo demás está en el menú del **clic derecho** sobre el widget.
 
 1. Clic derecho › Salir, y borra `Chispa.app`.
 2. Quita de `~/.claude/settings.json` las líneas que contienen `Chispa.app` (o recupera la copia `settings.json.antes-chispa`).
-3. Si quieres, borra `~/Library/Caches/local.chispa` y `~/Library/Preferences/local.chispa.plist`.
+3. Quítala de Ajustes del Sistema › General › Ítems de inicio y, si configuraste el reposo sin contraseña, borra la regla con `sudo rm /etc/sudoers.d/chispa`.
+4. Si quieres, borra `~/Library/Caches/local.chispa` y `~/Library/Preferences/local.chispa.plist`.
 
 ## Cómo está hecho
 
@@ -81,6 +87,6 @@ Chispa is a macOS desktop widget for **Claude Code**. It shows each running agen
 
 - **Requires** macOS 15+ and Claude Code. Jumping to an agent's tab needs macOS Terminal.
 - **Install**: download `Chispa.zip` from Releases, move `Chispa.app` to Applications, and on first launch allow it in *System Settings › Privacy & Security › Open Anyway* (the app is not notarized). Or build it yourself with `./build.sh`.
-- **First run**: it asks before adding hooks to `~/.claude/settings.json` and keeps a backup (`settings.json.antes-chispa`).
+- **First run**: it enables open-at-login and shows a welcome window that requests each permission (Claude Code hooks, notifications, Terminal control, login item; optional usage and password-free sleep) and opens the exact System Settings pane when one was denied. Hooks are added to `~/.claude/settings.json` with a one-time backup (`settings.json.antes-chispa`).
 - **Privacy**: everything stays on your Mac. The optional "remaining usage" rings (shown with an *Activate* button until you turn them on) read Claude Code's login from the Keychain and query an undocumented Anthropic endpoint; they may stop working at any time.
 - Made by [davidpedrosamorales-dotcom](https://github.com/davidpedrosamorales-dotcom). Not affiliated with Anthropic. MIT licensed.

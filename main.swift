@@ -2417,8 +2417,173 @@ final class TabView: NSView {
         if model.mood != mood { model.mood = mood }
     }
     func celebrate() { model.partyAt = Date() }
+
+    // Arrastrar la pestaña la mueve por el borde; un clic sin arrastrar abre el widget
+    var onDrag: ((CGFloat) -> Void)?        // nueva y (abajo de la pestaña, en pantalla)
+    var onDragEnd: (() -> Void)?
+    var onClick: (() -> Void)?
+    private(set) var pressed = false
+    private var startMouse = NSPoint.zero, startY: CGFloat = 0, dragging = false
+    override func hitTest(_ p: NSPoint) -> NSView? { frame.contains(p) ? self : nil }
+    override func acceptsFirstMouse(for e: NSEvent?) -> Bool { true }
+    override func mouseDown(with e: NSEvent) {
+        pressed = true; dragging = false
+        startMouse = NSEvent.mouseLocation; startY = window?.frame.minY ?? 0
+    }
+    override func mouseDragged(with e: NSEvent) {
+        let dy = NSEvent.mouseLocation.y - startMouse.y
+        if !dragging && abs(dy) > 3 { dragging = true; NSCursor.closedHand.set() }
+        if dragging { onDrag?(startY + dy) }
+    }
+    override func mouseUp(with e: NSEvent) {
+        pressed = false
+        if dragging { dragging = false; NSCursor.arrow.set(); onDragEnd?() } else { onClick?() }
+    }
     /// Solo se anima mientras se ve.
     func setVisible(_ v: Bool) { if model.visible != v { model.visible = v } }
+}
+
+
+// MARK: - Bienvenida y permisos
+/// Estado de cada cosa que Chispa necesita. 1 = listo · 0 = sin pedir · 2 = denegado · 3 = falta algo (ver texto)
+final class SetupModel: ObservableObject {
+    @Published var hooks = 0
+    @Published var notif = 0
+    @Published var terminal = 0
+    @Published var login = 0
+    @Published var usage = 0
+    @Published var sleep = 0
+    var act: [String: () -> Void] = [:]
+    var onDone: (() -> Void)?
+}
+
+struct SetupRow: View {
+    let icon: String, title: String, text: String, state: Int
+    let button: String, optional: Bool
+    let action: () -> Void
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: icon).font(.system(size: 15, weight: .semibold)).foregroundColor(uiAccent)
+                .frame(width: 34, height: 34).background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(uiAccent.opacity(0.14)))
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    if optional { Text("OPCIONAL").font(.system(size: 8.5, weight: .bold)).tracking(0.6).foregroundColor(.white.opacity(0.45))
+                        .padding(.horizontal, 5).padding(.vertical, 1.5).background(Capsule().stroke(Color.white.opacity(0.2))) }
+                }
+                Text(text).font(.system(size: 11)).foregroundColor(.white.opacity(0.58)).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if state == 1 {
+                HStack(spacing: 4) { Image(systemName: "checkmark.circle.fill"); Text("Listo") }
+                    .font(.system(size: 11.5, weight: .semibold)).foregroundColor(stateColor("done")).frame(minWidth: 96)
+            } else {
+                Button(action: action) {
+                    Text(button).font(.system(size: 11.5, weight: .semibold)).foregroundColor(state == 2 ? .white : .black.opacity(0.85))
+                        .padding(.horizontal, 12).frame(minWidth: 96).frame(height: 28)
+                        .background(Capsule().fill(state == 2 ? stateColor("attention") : (optional ? Color.white.opacity(0.85) : uiAccent)))
+                }
+                .buttonStyle(PressStyle())
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(state == 1 ? 0.06 : 0.12)))
+    }
+}
+
+struct SetupView: View {
+    @ObservedObject var m: SetupModel
+    func a(_ k: String) -> () -> Void { { m.act[k]?() } }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 14) {
+                Mascot(mood: "done", t: 2.0, party: nil).frame(width: 76, height: 100).scaleEffect(0.7).frame(width: 54, height: 70)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Bienvenida a Chispa").font(.system(size: 20, weight: .bold)).foregroundColor(.white)
+                    Text("Para funcionar necesita unos permisos. Pulsa cada botón: si macOS pregunta, acepta; si ya se denegó, te llevo al sitio exacto de Ajustes.")
+                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.62)).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            VStack(spacing: 8) {
+                SetupRow(icon: "link", title: "Conectar con Claude Code",
+                         text: m.hooks == 3 ? "No encuentro Claude Code. Instálalo, ábrelo una vez y vuelve aquí." : "Para saber cuándo tus agentes trabajan, terminan o te necesitan. Añade unos avisos a ~/.claude/settings.json (guarda una copia antes).",
+                         state: m.hooks, button: m.hooks == 3 ? "Reintentar" : "Conectar", optional: false, action: a("hooks"))
+                SetupRow(icon: "bell.badge", title: "Notificaciones",
+                         text: "Te avisa cuando un agente termina o espera tu permiso.",
+                         state: m.notif, button: m.notif == 2 ? "Abrir Ajustes" : "Permitir", optional: false, action: a("notif"))
+                SetupRow(icon: "terminal", title: "Controlar Terminal",
+                         text: m.terminal == 3 ? "Abriré Terminal un momento para que macOS pueda preguntarte." : "Para llevarte a la pestaña del agente que pulses.",
+                         state: m.terminal, button: m.terminal == 2 ? "Abrir Ajustes" : "Permitir", optional: false, action: a("terminal"))
+                SetupRow(icon: "power", title: "Abrir al iniciar sesión",
+                         text: m.login == 2 ? "macOS necesita que la apruebes en Ítems de inicio." : "Para que Chispa esté siempre ahí, también después de reiniciar.",
+                         state: m.login, button: m.login == 2 ? "Abrir Ajustes" : "Activar", optional: false, action: a("login"))
+                SetupRow(icon: "chart.pie", title: "Lo que te queda de Claude",
+                         text: "Cuánto te queda de la sesión y la semana. Usa tu sesión de Claude Code del Llavero: pulsa «Permitir», no «Permitir siempre».",
+                         state: m.usage, button: "Activar", optional: true, action: a("usage"))
+                SetupRow(icon: "moon.zzz", title: "Reposo sin contraseña",
+                         text: "Que el botón de «no dormir» no pida tu contraseña cada vez. Te la pedirá una sola vez para crear una regla que solo permite eso.",
+                         state: m.sleep, button: "Configurar", optional: true, action: a("sleep"))
+            }
+            HStack {
+                Text("Puedes volver aquí cuando quieras: clic derecho en el widget › Permisos y configuración.")
+                    .font(.system(size: 10.5)).foregroundColor(.white.opacity(0.45))
+                Spacer()
+                Button(action: { m.onDone?() }) {
+                    Text("Empezar").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                        .padding(.horizontal, 20).frame(height: 32).background(Capsule().fill(uiAccent))
+                }
+                .buttonStyle(PressStyle())
+            }
+        }
+        .padding(22)
+        .frame(width: 520)
+        .background(Color(red: 0.09, green: 0.09, blue: 0.10))
+        .environment(\.colorScheme, .dark)
+    }
+}
+
+/// Permiso para mandar órdenes a Terminal. ask = true enseña la pregunta de macOS (bloquea: llamar fuera del hilo principal).
+func terminalPermission(ask: Bool) -> Int {
+    guard !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Terminal").isEmpty else { return 3 }
+    var addr = AEAddressDesc()
+    let bid = "com.apple.Terminal"
+    let made = bid.withCString { AECreateDesc(DescType(typeApplicationBundleID), $0, strlen($0), &addr) }
+    guard made == noErr else { return 0 }
+    defer { AEDisposeDesc(&addr) }
+    let st = AEDeterminePermissionToAutomateTarget(&addr, AEEventClass(typeWildCard), AEEventID(typeWildCard), ask)
+    switch st {
+    case noErr: return 1
+    case OSStatus(errAEEventNotPermitted): return 2
+    case OSStatus(procNotFound): return 3
+    default: return 0
+    }
+}
+
+/// ¿Puede cambiar el reposo sin pedir contraseña? (regla en /etc/sudoers.d)
+func sleepRuleInstalled() -> Bool {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+    p.arguments = ["-n", "-l", "/usr/bin/pmset", "-a", "disablesleep", "1"]
+    p.standardOutput = Pipe(); p.standardError = Pipe()
+    try? p.run(); p.waitUntilExit()
+    return p.terminationStatus == 0
+}
+
+/// Crea /etc/sudoers.d/chispa (solo pmset -a disablesleep 0/1 para este usuario). Pide la contraseña de administrador.
+func installSleepRule() -> Bool {
+    let user = NSUserName()
+    guard user.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil else { return false }
+    let tmp = cacheDir.appendingPathComponent("sudoers-chispa")
+    try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+    let rule = "# Chispa: activar o quitar el reposo sin contraseña\n\(user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\n"
+    guard (try? rule.write(to: tmp, atomically: true, encoding: .utf8)) != nil else { return false }
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let q = tmp.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    let src = "set f to quoted form of \"\(q)\"\ndo shell script \"/usr/sbin/visudo -cf \" & f & \" && /usr/bin/install -m 0440 -o root -g wheel \" & f & \" /etc/sudoers.d/chispa\" with administrator privileges"
+    var err: NSDictionary?
+    NSAppleScript(source: src)?.executeAndReturnError(&err)
+    return err == nil && sleepRuleInstalled()
 }
 
 // MARK: - App
@@ -2441,6 +2606,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
     let privateItem = NSMenuItem(title: "Proyectos privados", action: nil, keyEquivalent: "")
     var lastSessions: [ClaudeSession] = []
+    let setup = SetupModel()
+    var setupWindow: NSWindow?
+    var setupTimer: Timer?
 
     /// Modo presentación: oculta los proyectos privados en el widget y en sus cifras.
     var presentation: Bool {
@@ -2571,12 +2739,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         tabPanel.backgroundColor = .clear
         tabPanel.hasShadow = true
         tabPanel.level = .statusBar
-        tabPanel.ignoresMouseEvents = true
+        tabPanel.ignoresMouseEvents = false
         tabPanel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         tabPanel.hidesOnDeactivate = false
         tabView = TabView(frame: NSRect(origin: .zero, size: TabView.size))
         tabPanel.contentView = tabView
         tabView.set(mood: "idle", working: 0)
+        tabView.onDrag = { [weak self] y in
+            guard let self else { return }
+            let vf = self.screenFrame()
+            let ny = min(max(y, vf.minY + 6), vf.maxY - 4 - TabView.size.height)
+            var f = self.tabPanel.frame; f.origin.y = ny
+            self.tabPanel.setFrame(f, display: true)
+        }
+        tabView.onDragEnd = { [weak self] in
+            guard let self else { return }
+            self.topY = self.tabPanel.frame.maxY + 18        // el widget se abre a la altura de la pestaña
+            self.clampPosition(); self.savePosition()
+            self.edgeSince = nil
+        }
+        tabView.onClick = { [weak self] in
+            guard let self, !self.shown else { return }
+            self.shown = true; self.edgeSince = nil; self.outsideSince = nil
+            self.layoutPanel(animated: true)
+        }
 
         // Restaurar posición (se guarda la esquina superior, no el alto)
         let vf = screenFrame()
@@ -2591,7 +2777,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         registerHotKey()
         hideItem.target = self
         menu.insertItem(hideItem, at: 2)
-        let connectItem = NSMenuItem(title: "Conectar con Claude Code", action: #selector(connectClaude), keyEquivalent: "")
+        let connectItem = NSMenuItem(title: "Permisos y configuración…", action: #selector(showSetup), keyEquivalent: "")
         connectItem.target = self
         menu.insertItem(connectItem, at: 3)
         let reportItem = NSMenuItem(title: "Informe semanal…", action: #selector(makeReport), keyEquivalent: "")
@@ -2617,11 +2803,20 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
         let nc = UNUserNotificationCenter.current()
         nc.delegate = self
-        nc.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        if defaults.bool(forKey: "onboarded") { nc.requestAuthorization(options: [.alert, .sound]) { _, _ in } }
 
         view.updateProject(projectName(projectPath))
         tick()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.ensureClaudeHooks(askIfMissing: true) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            if self.defaults.bool(forKey: "onboarded") { self.ensureClaudeHooks(askIfMissing: true); return }
+            // Primera vez: arranca sola con el Mac (se puede quitar en el menú) y enseña la bienvenida
+            if !self.defaults.bool(forKey: "loginAuto") {
+                self.defaults.set(true, forKey: "loginAuto")
+                if SMAppService.mainApp.status != .enabled { try? SMAppService.mainApp.register() }
+            }
+            self.showSetup()
+        }
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
     }
 
@@ -2719,7 +2914,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     func clampPosition() {
         let vf = screenFrame()
-        topY = min(max(topY, vf.minY + 200), vf.maxY - 4)
+        topY = min(max(topY, vf.minY + 24 + TabView.size.height), vf.maxY - 4)
         homeX = min(max(homeX, vf.minX + 4), vf.maxX - WidgetView.W - 4)
     }
 
@@ -2864,13 +3059,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         } else {
             let t = tabPanel.frame
             let hot = m.x <= t.maxX + 2 && m.y >= t.minY - 8 && m.y <= t.maxY + 8
-            if hot {
+            if hot && !tabView.pressed && NSEvent.pressedMouseButtons == 0 {
                 if edgeSince == nil { edgeSince = Date() }
-                if Date().timeIntervalSince(edgeSince!) > 0.1 {
+                if Date().timeIntervalSince(edgeSince!) > 0.3 {
                     shown = true; edgeSince = nil; outsideSince = nil
                     layoutPanel(animated: true)
                 }
-            } else { edgeSince = nil }
+            } else if !hot { edgeSince = nil }
         }
     }
 
@@ -3054,7 +3249,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     // MARK: Conexión con Claude Code (hooks en ~/.claude/settings.json)
     /// Comprueba que Claude Code avisa a este widget. Si la app se ha movido, corrige la ruta;
     /// si nunca se ha conectado, pregunta antes de tocar nada. Siempre deja copia de seguridad.
-    func ensureClaudeHooks(askIfMissing: Bool) {
+    func ensureClaudeHooks(askIfMissing: Bool, confirm: Bool = true) {
         guard let script = Bundle.main.path(forResource: "claude-hook", ofType: "sh") else { return }
         let fm = FileManager.default
         let file = home.appendingPathComponent(".claude/settings.json")
@@ -3096,7 +3291,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             hooks[w.event] = entries
         }
         guard changed else { return }
-        if present == 0 {
+        if present == 0 && confirm {
             // Primera vez en este Mac: se pregunta (una sola vez si viene del arranque)
             if askIfMissing && defaults.bool(forKey: "hooksAsked") { return }
             defaults.set(true, forKey: "hooksAsked")
@@ -3118,6 +3313,118 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     @objc func connectClaude() { defaults.set(false, forKey: "hooksAsked"); ensureClaudeHooks(askIfMissing: false) }
+
+    /// ¿Están los avisos de Claude Code apuntando a esta copia de la app?
+    func hooksConnected() -> Int {
+        guard isDir(home.appendingPathComponent(".claude")) else { return 3 }
+        guard let script = Bundle.main.path(forResource: "claude-hook", ofType: "sh"),
+              let text = try? String(contentsOf: home.appendingPathComponent(".claude/settings.json"), encoding: .utf8) else { return 0 }
+        return text.contains(script) ? 1 : 0
+    }
+
+    func refreshSetup() {
+        let s = setup
+        s.hooks = hooksConnected()
+        switch SMAppService.mainApp.status {
+        case .enabled: s.login = 1
+        case .requiresApproval: s.login = 2
+        default: s.login = 0
+        }
+        s.usage = showUsage ? 1 : 0
+        UNUserNotificationCenter.current().getNotificationSettings { st in
+            let v = st.authorizationStatus == .authorized || st.authorizationStatus == .provisional ? 1 : st.authorizationStatus == .denied ? 2 : 0
+            DispatchQueue.main.async { if s.notif != v { s.notif = v } }
+        }
+        DispatchQueue.global(qos: .utility).async {
+            let t = terminalPermission(ask: false), r = sleepRuleInstalled() ? 1 : 0
+            DispatchQueue.main.async { if s.terminal != t { s.terminal = t }; if s.sleep != r { s.sleep = r } }
+        }
+    }
+
+    func openSettings(_ url: String) { if let u = URL(string: url) { NSWorkspace.shared.open(u) } }
+
+    func configureSetupActions() {
+        setup.act["hooks"] = { [weak self] in
+            guard let self else { return }
+            if self.hooksConnected() == 3 { self.refreshSetup(); return }
+            self.ensureClaudeHooks(askIfMissing: false, confirm: false)
+            self.refreshSetup()
+        }
+        setup.act["notif"] = { [weak self] in
+            guard let self else { return }
+            if self.setup.notif == 2 { self.openSettings("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=local.chispa"); return }
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in
+                DispatchQueue.main.async { self.refreshSetup() }
+            }
+        }
+        setup.act["terminal"] = { [weak self] in
+            guard let self else { return }
+            if self.setup.terminal == 2 { self.openSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"); return }
+            let ask = {
+                DispatchQueue.global(qos: .userInitiated).async {
+                    _ = terminalPermission(ask: true)
+                    DispatchQueue.main.async { self.refreshSetup(); NSApp.activate(ignoringOtherApps: true); self.setupWindow?.makeKeyAndOrderFront(nil) }
+                }
+            }
+            if NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Terminal").isEmpty {
+                let cfg = NSWorkspace.OpenConfiguration(); cfg.activates = false
+                NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"), configuration: cfg) { _, _ in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { ask() }
+                }
+            } else { ask() }
+        }
+        setup.act["login"] = { [weak self] in
+            guard let self else { return }
+            if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems(); return }
+            do { try SMAppService.mainApp.register() } catch { SMAppService.openSystemSettingsLoginItems() }
+            if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
+            self.refreshSetup()
+        }
+        setup.act["usage"] = { [weak self] in
+            guard let self, !self.showUsage else { return }
+            self.toggleUsage(); self.refreshSetup()
+        }
+        setup.act["sleep"] = { [weak self] in
+            guard let self else { return }
+            if !installSleepRule() {
+                let a = NSAlert(); a.messageText = "No se ha configurado"
+                a.informativeText = "No se creó la regla (quizá se canceló la contraseña). El botón de reposo seguirá funcionando, pero te pedirá la contraseña cada vez."
+                a.runModal()
+            }
+            self.refreshSetup()
+        }
+        setup.onDone = { [weak self] in
+            self?.defaults.set(true, forKey: "onboarded")
+            self?.setupWindow?.close()
+        }
+    }
+
+    @objc func showSetup() {
+        if setupWindow == nil {
+            configureSetupActions()
+            let host = NSHostingView(rootView: SetupView(m: setup))
+            let w = NSWindow(contentRect: NSRect(origin: .zero, size: host.fittingSize), styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.isMovableByWindowBackground = true
+            w.appearance = NSAppearance(named: .darkAqua)
+            w.backgroundColor = NSColor(red: 0.09, green: 0.09, blue: 0.10, alpha: 1)
+            w.contentView = host
+            w.isReleasedWhenClosed = false
+            w.level = .floating
+            setupWindow = w
+        }
+        refreshSetup()
+        setupWindow?.center()
+        NSApp.activate(ignoringOtherApps: true)
+        setupWindow?.makeKeyAndOrderFront(nil)
+        setupTimer?.invalidate()
+        // Al volver de Ajustes del Sistema, las filas se ponen en verde solas
+        setupTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] t in
+            guard let self, self.setupWindow?.isVisible == true else { t.invalidate(); return }
+            self.refreshSetup()
+        }
+    }
 
     @objc func openOwnProject() {
         launchClaude(in: ownSourceURL, continueLast: false)
@@ -3268,6 +3575,20 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-tab"), i + 1 < Command
     MainActor.assumeIsolated {
         let r = ImageRenderer(content: row)
         r.scale = 4
+        if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
+        }
+    }
+    exit(0)
+}
+
+// `Chispa --render-setup salida.png` dibuja la ventana de bienvenida con estados variados
+if let i = CommandLine.arguments.firstIndex(of: "--render-setup"), i + 1 < CommandLine.arguments.count {
+    let m = SetupModel(); m.hooks = 1; m.notif = 1; m.terminal = 0; m.login = 2; m.usage = 0; m.sleep = 0
+    MainActor.assumeIsolated {
+        let r = ImageRenderer(content: SetupView(m: m))
+        r.scale = 2
         if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
            let png = rep.representation(using: .png, properties: [:]) {
             try? png.write(to: URL(fileURLWithPath: CommandLine.arguments[i + 1]))
