@@ -3,19 +3,19 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>Chispa</string>
+	<string>Txispa</string>
 	<key>CFBundleExecutable</key>
-	<string>Chispa</string>
+	<string>Txispa</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.chispa</string>
 	<key>CFBundleName</key>
-	<string>Chispa</string>
+	<string>Txispa</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.5.1</string>
+	<string>2.6</string>
 	<key>CFBundleVersion</key>
-	<string>2.5.1</string>
+	<string>2.6</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>LSUIElement</key>

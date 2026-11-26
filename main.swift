@@ -35,8 +35,11 @@ var projectsURL: URL {
     return home.appendingPathComponent("Documents/Proyectos Claude")
 }
 var projectsName: String { projectsURL.lastPathComponent }
-/// El código de Chispa, si está en la carpeta de proyectos (para «Editar Chispa»).
-var ownSourceURL: URL { projectsURL.appendingPathComponent("Chispa") }
+/// El código de Txispa, si está en la carpeta de proyectos (para «Editar Txispa»).
+var ownSourceURL: URL {
+    let nuevo = projectsURL.appendingPathComponent("Txispa"), viejo = projectsURL.appendingPathComponent("Chispa")
+    return FileManager.default.fileExists(atPath: viejo.appendingPathComponent("main.swift").path) && !FileManager.default.fileExists(atPath: nuevo.path) ? viejo : nuevo
+}
 
 // MARK: - pmset
 func isSleepDisabled() -> Bool {
@@ -415,7 +418,7 @@ func focusITermSession(tty: String) -> Bool {
 }
 
 // MARK: - Versiones nuevas (GitHub)
-let chispaRepo = "davidpedrosamorales-dotcom/chispa"
+let chispaRepo = "davidpedrosamorales-dotcom/txispa"
 var chispaVersion: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0" }
 
 /// "2.10" > "2.9": compara número a número.
@@ -432,7 +435,7 @@ func isNewer(_ a: String, than b: String) -> Bool {
 func fetchLatestVersion(_ done: @escaping (String?) -> Void) {
     var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(chispaRepo)/releases/latest")!, timeoutInterval: 15)
     req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-    req.setValue("Chispa", forHTTPHeaderField: "User-Agent")
+    req.setValue("Txispa", forHTTPHeaderField: "User-Agent")
     URLSession.shared.dataTask(with: req) { data, resp, _ in
         var v: String?
         if (resp as? HTTPURLResponse)?.statusCode == 200, let data,
@@ -1789,7 +1792,7 @@ struct WidgetUI: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressStyle())
-        .help(T("Descarga e instala la versión \(v) desde GitHub. Chispa se cerrará y se volverá a abrir.", "Downloads and installs version \(v) from GitHub. Chispa will quit and reopen."))
+        .help(T("Descarga e instala la versión \(v) desde GitHub. Txispa se cerrará y se volverá a abrir.", "Downloads and installs version \(v) from GitHub. Txispa will quit and reopen."))
     }
 
     var content: some View {
@@ -1869,7 +1872,7 @@ struct WidgetUI: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { model.brain.poke() }
-            .help(T("Chispa. Tócala.", "Chispa. Poke her."))
+            .help(T("Txispa. Tócala.", "Txispa. Poke her."))
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkle").font(.system(size: 9.5, weight: .bold)).foregroundColor(uiAccent)
@@ -1963,7 +1966,7 @@ struct WidgetUI: View {
                     Button(action: { model.onChooseFolder?() }) { Label(T("Cambiar carpeta", "Change folder"), systemImage: "folder.badge.gearshape") }
                         .buttonStyle(MiniStyle()).fixedSize()
                     if model.canEditSelf {
-                        Button(action: { model.onEditSelf?() }) { Label(T("Editar Chispa", "Edit Chispa"), systemImage: "terminal") }
+                        Button(action: { model.onEditSelf?() }) { Label(T("Editar Txispa", "Edit Txispa"), systemImage: "terminal") }
                             .buttonStyle(MiniStyle()).fixedSize()
                     }
                     Spacer(minLength: 0)
@@ -2721,7 +2724,7 @@ final class TabView: NSView {
 
 
 // MARK: - Bienvenida y permisos
-/// Estado de cada cosa que Chispa necesita. 1 = listo · 0 = sin pedir · 2 = denegado · 3 = falta algo (ver texto)
+/// Estado de cada cosa que Txispa necesita. 1 = listo · 0 = sin pedir · 2 = denegado · 3 = falta algo (ver texto)
 final class SetupModel: ObservableObject {
     @Published var hooks = 0
     @Published var notif = 0
@@ -2776,14 +2779,14 @@ struct SetupView: View {
             HStack(spacing: 14) {
                 Mascot(mood: "done", t: 2.0, party: nil).frame(width: 76, height: 100).scaleEffect(0.7).frame(width: 54, height: 70)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(T("Bienvenida a Chispa", "Welcome to Chispa")).font(.system(size: 20, weight: .bold)).foregroundColor(.white)
-                    Text(T("Para funcionar necesita unos permisos. Pulsa cada botón: si macOS pregunta, acepta; si ya se denegó, te llevo al sitio exacto de Ajustes.", "Chispa needs a few permissions. Click each button: if macOS asks, accept; if it was already denied, I'll take you to the exact place in Settings."))
+                    Text(T("Bienvenida a Txispa", "Welcome to Txispa")).font(.system(size: 20, weight: .bold)).foregroundColor(.white)
+                    Text(T("Para funcionar necesita unos permisos. Pulsa cada botón: si macOS pregunta, acepta; si ya se denegó, te llevo al sitio exacto de Ajustes.", "Txispa needs a few permissions. Click each button: if macOS asks, accept; if it was already denied, I'll take you to the exact place in Settings."))
                         .font(.system(size: 12)).foregroundColor(.white.opacity(0.62)).fixedSize(horizontal: false, vertical: true)
                 }
             }
             VStack(spacing: 8) {
                 SetupRow(icon: "link", title: T("Conectar con Claude Code", "Connect to Claude Code"),
-                         text: m.hooks == 3 ? T("No encuentro Claude Code. Instálalo, ábrelo una vez y vuelve aquí.", "Claude Code isn't installed. Install it, open it once and come back here.") : T("Para saber cuándo tus agentes trabajan, terminan o te necesitan. Añade unos avisos a ~/.claude/settings.json (guarda una copia antes).", "So Chispa knows when your agents work, finish or need you. Adds a few hooks to ~/.claude/settings.json (a backup is kept)."),
+                         text: m.hooks == 3 ? T("No encuentro Claude Code. Instálalo, ábrelo una vez y vuelve aquí.", "Claude Code isn't installed. Install it, open it once and come back here.") : T("Para saber cuándo tus agentes trabajan, terminan o te necesitan. Añade unos avisos a ~/.claude/settings.json (guarda una copia antes).", "So Txispa knows when your agents work, finish or need you. Adds a few hooks to ~/.claude/settings.json (a backup is kept)."),
                          state: m.hooks, button: m.hooks == 3 ? T("Reintentar", "Retry") : T("Conectar", "Connect"), optional: false, action: a("hooks"))
                 SetupRow(icon: "bell.badge", title: T("Notificaciones", "Notifications"),
                          text: T("Te avisa cuando un agente termina o espera tu permiso.", "Tells you when an agent finishes or is waiting for your permission."),
@@ -2792,7 +2795,7 @@ struct SetupView: View {
                          text: m.terminal == 3 ? T("Abriré Terminal un momento para que macOS pueda preguntarte.", "Terminal will open for a moment so macOS can ask you.") : T("Para llevarte a la pestaña del agente que pulses.", "To take you to the tab of the agent you click."),
                          state: m.terminal, button: m.terminal == 2 ? T("Abrir Ajustes", "Open Settings") : T("Permitir", "Allow"), optional: false, action: a("terminal"))
                 SetupRow(icon: "power", title: T("Abrir al iniciar sesión", "Open at login"),
-                         text: m.login == 2 ? T("macOS necesita que la apruebes en Ítems de inicio.", "macOS needs you to approve it in Login Items.") : T("Para que Chispa esté siempre ahí, también después de reiniciar.", "So Chispa is always there, even after restarting."),
+                         text: m.login == 2 ? T("macOS necesita que la apruebes en Ítems de inicio.", "macOS needs you to approve it in Login Items.") : T("Para que Txispa esté siempre ahí, también después de reiniciar.", "So Txispa is always there, even after restarting."),
                          state: m.login, button: m.login == 2 ? T("Abrir Ajustes", "Open Settings") : T("Activar", "Turn on"), optional: false, action: a("login"))
                 SetupRow(icon: "chart.pie", title: T("Lo que te queda de Claude", "Claude usage left"),
                          text: T("Cuánto te queda de la sesión y la semana. Usa tu sesión de Claude Code del Llavero: pulsa «Permitir», no «Permitir siempre».", "How much of your session and week is left. Uses your Claude Code login from the Keychain: click “Allow”, not “Always Allow”."),
@@ -2852,7 +2855,7 @@ func installSleepRule() -> Bool {
     guard user.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil else { return false }
     let tmp = cacheDir.appendingPathComponent("sudoers-chispa")
     try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-    let rule = "# Chispa: activar o quitar el reposo sin contraseña\n\(user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\n"
+    let rule = "# Txispa: activar o quitar el reposo sin contraseña\n\(user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\n"
     guard (try? rule.write(to: tmp, atomically: true, encoding: .utf8)) != nil else { return false }
     defer { try? FileManager.default.removeItem(at: tmp) }
     let q = tmp.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
@@ -2922,7 +2925,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     var edgeSince: Date?
     var edgeTimer: Timer?
     var tabPanel: TabPanelWindow!
-    /// La última app que tenía el teclado antes de Chispa: se le devuelve al recogerse.
+    /// La última app que tenía el teclado antes de Txispa: se le devuelve al recogerse.
     var lastOtherApp: NSRunningApplication?
     var tabView: TabView!
 
@@ -2956,7 +2959,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        // Seguir cuál era la última app con el teclado (que no sea Chispa)
+        // Seguir cuál era la última app con el teclado (que no sea Txispa)
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             if let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication, app.processIdentifier != ProcessInfo.processInfo.processIdentifier {
                 self?.lastOtherApp = app
@@ -3026,7 +3029,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         updatesItem.target = self
         menu.addItem(updatesItem)
         menu.addItem(.separator())
-        let uninstallItem = NSMenuItem(title: T("Desinstalar Chispa…", "Uninstall Chispa…"), action: #selector(uninstall), keyEquivalent: "")
+        let uninstallItem = NSMenuItem(title: T("Desinstalar Txispa…", "Uninstall Txispa…"), action: #selector(uninstall), keyEquivalent: "")
         uninstallItem.target = self
         menu.addItem(uninstallItem)
         menu.addItem(withTitle: T("Salir", "Quit"), action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
@@ -3111,6 +3114,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
         view.updateProject(projectName(projectPath))
         tick()
+        // Si la app ha cambiado de sitio o de nombre (Chispa.app → Txispa.app), el arranque al iniciar sesión se vuelve a apuntar aquí
+        let here = Bundle.main.bundlePath
+        if defaults.string(forKey: "appPath") != here {
+            if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister(); try? SMAppService.mainApp.register() }
+            defaults.set(here, forKey: "appPath")
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
             if self.defaults.bool(forKey: "onboarded") { self.ensureClaudeHooks(askIfMissing: true); return }
@@ -3339,7 +3348,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
 
     /// La pestaña sale del borde y crece hasta ser el panel (abrir), o el panel vuelve a la pestaña (cerrar).
     /// Primero se mueve una forma negra (como la propia pestaña) y el contenido aparece o se va con un fundido.
-    /// Si Chispa se había quedado con el teclado, vuelve a la app en la que estabas.
+    /// Si Txispa se había quedado con el teclado, vuelve a la app en la que estabas.
     func giveFocusBack() {
         guard NSApp.isActive else { return }
         if let app = lastOtherApp, !app.isTerminated { app.activate() } else { NSApp.deactivate() }
@@ -3532,7 +3541,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if !showUsage {
             let a = NSAlert()
             a.messageText = T("¿Mostrar lo que te queda de Claude?", "Show Claude usage left?")
-            a.informativeText = "Para saberlo, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa «Permitir», no «Permitir siempre») y pregunta a Anthropic cuánto uso te queda. Es una función no oficial: puede dejar de funcionar sin aviso. Tu sesión no se guarda ni se envía a ningún otro sitio."
+            a.informativeText = "Para saberlo, Txispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa «Permitir», no «Permitir siempre») y pregunta a Anthropic cuánto uso te queda. Es una función no oficial: puede dejar de funcionar sin aviso. Tu sesión no se guarda ni se envía a ningún otro sitio."
             a.addButton(withTitle: T("Mostrar", "Show")); a.addButton(withTitle: T("Cancelar", "Cancel"))
             NSApp.activate(ignoringOtherApps: true)
             guard a.runModal() == .alertFirstButtonReturn else { return }
@@ -3550,7 +3559,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             guard let v, isNewer(v, than: chispaVersion) else {
                 if manual {
                     let a = NSAlert(); a.messageText = T("Tienes la última versión", "You have the latest version")
-                    a.informativeText = v == nil ? T("No he podido consultar GitHub. Inténtalo más tarde.", "Couldn't reach GitHub. Try again later.") : T("Chispa \(chispaVersion) es la más reciente.", "Chispa \(chispaVersion) is the newest.")
+                    a.informativeText = v == nil ? T("No he podido consultar GitHub. Inténtalo más tarde.", "Couldn't reach GitHub. Try again later.") : T("Txispa \(chispaVersion) es la más reciente.", "Txispa \(chispaVersion) is the newest.")
                     NSApp.activate(ignoringOtherApps: true); a.runModal()
                 }
                 return
@@ -3561,7 +3570,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
             self.view.refit()
             if self.defaults.string(forKey: "notifiedVersion") != v {
                 self.defaults.set(v, forKey: "notifiedVersion")
-                notify(T("Hay una versión nueva de Chispa", "A new version of Chispa is out"), T("La \(v) ya está disponible. Pulsa «Actualizar» en el widget.", "Version \(v) is available. Click “Update” in the widget."))
+                notify(T("Hay una versión nueva de Txispa", "A new version of Txispa is out"), T("La \(v) ya está disponible. Pulsa «Actualizar» en el widget.", "Version \(v) is available. Click “Update” in the widget."))
             }
         }
     }
@@ -3572,30 +3581,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if checkUpdates { lookForUpdate(manual: true) }
     }
 
-    /// Descarga e instala la última versión con el instalador del repositorio; Chispa se cierra y se vuelve a abrir.
+    /// Descarga e instala la última versión con el instalador del repositorio; Txispa se cierra y se vuelve a abrir.
     @objc func runUpdate() {
         guard let v = view.model.updateVersion else { lookForUpdate(manual: true); return }
         let a = NSAlert()
-        a.messageText = T("¿Actualizar Chispa a la \(v)?", "Update Chispa to \(v)?")
-        a.informativeText = T("Se descarga de GitHub, se comprueba su huella SHA-256 y se instala en lugar de la actual. Chispa se cerrará y se volverá a abrir sola; tus ajustes se conservan.", "It's downloaded from GitHub, its SHA-256 is checked and it replaces the current one. Chispa will quit and reopen by itself; your settings are kept.")
+        a.messageText = T("¿Actualizar Txispa a la \(v)?", "Update Txispa to \(v)?")
+        a.informativeText = T("Se descarga de GitHub, se comprueba su huella SHA-256 y se instala en lugar de la actual. Txispa se cerrará y se volverá a abrir sola; tus ajustes se conservan.", "It's downloaded from GitHub, its SHA-256 is checked and it replaces the current one. Txispa will quit and reopen by itself; your settings are kept.")
         a.addButton(withTitle: T("Actualizar", "Update")); a.addButton(withTitle: T("Ahora no", "Not now"))
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let log = cacheDir.appendingPathComponent("actualizacion.log").path.replacingOccurrences(of: "'", with: "'\\''")
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        // Separado de Chispa: el instalador la cierra y la vuelve a abrir
+        // Separado de Txispa: el instalador la cierra y la vuelve a abrir
         p.arguments = ["-c", "nohup /bin/bash -c 'curl -fsSL https://raw.githubusercontent.com/\(chispaRepo)/main/install.sh | /bin/bash' > '\(log)' 2>&1 &"]
         try? p.run()
     }
 
-    /// Quita todo lo que Chispa ha puesto en el Mac y mueve la app a la Papelera.
+    /// Quita todo lo que Txispa ha puesto en el Mac y mueve la app a la Papelera.
     @objc func uninstall() {
         let a = NSAlert()
-        a.messageText = T("¿Desinstalar Chispa?", "Uninstall Chispa?")
+        a.messageText = T("¿Desinstalar Txispa?", "Uninstall Txispa?")
         a.informativeText = uiSpanish ? """
         Se quitará:
-        • Los avisos de Chispa en ~/.claude/settings.json (los de otras apps se quedan).
+        • Los avisos de Txispa en ~/.claude/settings.json (los de otras apps se quedan).
         • El arranque al iniciar sesión y el permiso para controlar Terminal.
         • La regla de reposo sin contraseña, si la configuraste (te pedirá tu contraseña).
         • Sus ajustes y su caché.
@@ -3604,7 +3613,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         Si el Mac está en modo «no dormir», vuelve al reposo normal. Tus informes en Documentos › Informes Claude se quedan.
         """ : """
         This will remove:
-        • Chispa's hooks in ~/.claude/settings.json (other apps' hooks stay).
+        • Txispa's hooks in ~/.claude/settings.json (other apps' hooks stay).
         • Open at login and the permission to control Terminal.
         • The password-free sleep rule, if you set it up (it will ask for your password).
         • Its settings and cache.
@@ -3634,18 +3643,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         defaults.synchronize()
         try? FileManager.default.removeItem(at: home.appendingPathComponent("Library/Preferences/local.chispa.plist"))
         let done = NSAlert()
-        done.messageText = T("Chispa se ha desinstalado", "Chispa has been uninstalled")
+        done.messageText = T("Txispa se ha desinstalado", "Txispa has been uninstalled")
         done.informativeText = T("La app está en la Papelera. Gracias por probarla.", "The app is in the Trash. Thanks for trying it.")
         done.runModal()
         exit(0)
     }
 
-    /// Quita de settings.json solo los avisos de Chispa.
+    /// Quita de settings.json solo los avisos de Txispa.
     func removeClaudeHooks() {
         let file = home.appendingPathComponent(".claude/settings.json")
         guard let d = try? Data(contentsOf: file), var root = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
               var hooks = root["hooks"] as? [String: Any] else { return }
-        func isOurs(_ cmd: String) -> Bool { cmd.contains("Chispa") && cmd.contains("claude-hook.sh") }
+        func isOurs(_ cmd: String) -> Bool { (cmd.contains("Txispa") || cmd.contains("Chispa")) && cmd.contains("claude-hook.sh") }   // «Chispa»: nombre antiguo
         for (event, value) in hooks {
             guard let entries = value as? [[String: Any]] else { continue }
             var kept: [[String: Any]] = []
@@ -3826,7 +3835,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         let wanted: [(event: String, state: String, matcher: String?)] = [
             ("UserPromptSubmit", "working", nil), ("PostToolUse", "working", "*"), ("Stop", "done", nil),
             ("Notification", "attention", "permission_prompt|elicitation_dialog"), ("SessionEnd", "end", nil)]
-        func isOurs(_ cmd: String) -> Bool { cmd.contains("Chispa") && cmd.contains("claude-hook.sh") }
+        func isOurs(_ cmd: String) -> Bool { (cmd.contains("Txispa") || cmd.contains("Chispa")) && cmd.contains("claude-hook.sh") }   // «Chispa»: nombre antiguo
         var present = 0, changed = false
         for w in wanted {
             let cmd = "'" + script.replacingOccurrences(of: "'", with: "'\\''") + "' \(w.state)"
@@ -4043,7 +4052,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 }
 
-// Prueba desde Terminal: `Chispa --informe ruta.html` escribe el informe y sale (no abre nada)
+// Prueba desde Terminal: `Txispa --informe ruta.html` escribe el informe y sale (no abre nada)
 if let i = CommandLine.arguments.firstIndex(of: "--informe"), i + 1 < CommandLine.arguments.count {
     let out = URL(fileURLWithPath: CommandLine.arguments[i + 1])
     WorkStatsReader().weekSessions { sessions, prev in
@@ -4053,7 +4062,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--informe"), i + 1 < CommandLin
     RunLoop.main.run()
 }
 
-// `Chispa --render salida.png [busy|idle|alert]` dibuja el widget con datos de ejemplo y sale
+// `Txispa --render salida.png [busy|idle|alert]` dibuja el widget con datos de ejemplo y sale
 if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine.arguments.count {
     let scenario = CommandLine.arguments.count > i + 2 ? CommandLine.arguments[i + 2] : "busy"
     let m = WidgetModel()
@@ -4118,7 +4127,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine
     exit(0)
 }
 
-// `Chispa --render-tab salida.png` dibuja la pestañita en sus cuatro estados
+// `Txispa --render-tab salida.png` dibuja la pestañita en sus cuatro estados
 if let i = CommandLine.arguments.firstIndex(of: "--render-tab"), i + 1 < CommandLine.arguments.count {
     // reposo · trabajando · te necesita · celebrando · después de terminar
     let now = Date()
@@ -4144,7 +4153,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-tab"), i + 1 < Command
     exit(0)
 }
 
-// `Chispa --render-gif salida.gif` anima la pestaña y la mascota: duerme → trabaja → celebra → duerme (para el README)
+// `Txispa --render-gif salida.gif` anima la pestaña y la mascota: duerme → trabaja → celebra → duerme (para el README)
 if let i = CommandLine.arguments.firstIndex(of: "--render-gif"), i + 1 < CommandLine.arguments.count {
     let fps = 15.0, total = 10.0
     let base = Date(timeIntervalSinceReferenceDate: 800_000_000)
@@ -4189,7 +4198,7 @@ if let i = CommandLine.arguments.firstIndex(of: "--render-gif"), i + 1 < Command
     exit(0)
 }
 
-// `Chispa --render-setup salida.png` dibuja la ventana de bienvenida con estados variados
+// `Txispa --render-setup salida.png` dibuja la ventana de bienvenida con estados variados
 if let i = CommandLine.arguments.firstIndex(of: "--render-setup"), i + 1 < CommandLine.arguments.count {
     let m = SetupModel(); m.hooks = 1; m.notif = 1; m.terminal = 0; m.login = 2; m.usage = 0; m.sleep = 0
     MainActor.assumeIsolated {
@@ -4211,7 +4220,7 @@ if CommandLine.arguments.contains("--login-item") {
     exit(0)
 }
 
-// `Chispa --render-mascot salida.png` dibuja la mascota en todos sus estados
+// `Txispa --render-mascot salida.png` dibuja la mascota en todos sus estados
 if let i = CommandLine.arguments.firstIndex(of: "--render-mascot"), i + 1 < CommandLine.arguments.count {
     let outPath = CommandLine.arguments[i + 1]
     MainActor.assumeIsolated {

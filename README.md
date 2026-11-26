@@ -1,14 +1,16 @@
-# Chispa
+# Txispa
 
 Un widget para el escritorio del Mac que te enseña, de un vistazo, qué están haciendo tus agentes de **Claude Code**: quién trabaja, quién ha terminado y quién espera tu permiso. Con una mascota que se alegra cuando acaban.
 
 *A desktop widget for macOS that shows what your Claude Code agents are doing. [English below](#english).*
 
-![La mascota de Chispa en el borde de la pantalla: duerme, trabaja y celebra](docs/mascota.gif)
+![La mascota de Txispa en el borde de la pantalla: duerme, trabaja y celebra](docs/mascota.gif)
 
-![Chispa](docs/widget.png)
+![Txispa](docs/widget.png)
 
 > Proyecto personal de código abierto. **No es una app oficial de Anthropic** ni está relacionada con ella.
+
+> **Antes se llamaba Chispa.** Si ya la tenías, actualiza como siempre: la versión nueva sustituye a `Chispa.app` y conserva tus ajustes, permisos y conexión con Claude Code. *Formerly called Chispa: updating replaces `Chispa.app` and keeps your settings.*
 
 ## Qué hace
 
@@ -32,29 +34,29 @@ Un widget para el escritorio del Mac que te enseña, de un vistazo, qué están 
 **La forma más fácil:** pega el enlace de este repositorio en Claude Code y dile «instálalo». O pega tú esta línea en Terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/davidpedrosamorales-dotcom/chispa/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/davidpedrosamorales-dotcom/txispa/main/install.sh | bash
 ```
 
 Descarga la última versión, comprueba su huella SHA-256, la instala en Aplicaciones (o la actualiza si ya la tenías) y **la abre sola**. Después solo tienes que seguir la ventana de bienvenida. Puedes leer antes lo que hace en [`install.sh`](install.sh).
 
-> **Para asistentes de IA (Claude Code y similares):** para instalar Chispa ejecuta solo el comando de arriba. No hace falta clonar el repositorio ni compilar. No modifiques `~/.claude/settings.json` ni pidas permisos de macOS por tu cuenta: la app lo hace en su ventana de bienvenida, donde la persona pulsa cada botón. Cuando termine, dile que siga esa ventana (conectar con Claude Code, notificaciones, controlar Terminal y abrir al iniciar sesión).
+> **Para asistentes de IA (Claude Code y similares):** para instalar Txispa ejecuta solo el comando de arriba. No hace falta clonar el repositorio ni compilar. No modifiques `~/.claude/settings.json` ni pidas permisos de macOS por tu cuenta: la app lo hace en su ventana de bienvenida, donde la persona pulsa cada botón. Cuando termine, dile que siga esa ventana (conectar con Claude Code, notificaciones, controlar Terminal y abrir al iniciar sesión).
 
 ### Otras formas
 
-**Descargar a mano.** Baja `Chispa.zip` de [Releases](../../releases), descomprímelo y arrastra `Chispa.app` a Aplicaciones. La primera vez macOS dirá que no puede comprobar la app (no está firmada con una cuenta de desarrollador de Apple): ve a **Ajustes del Sistema › Privacidad y seguridad** y pulsa **Abrir igualmente**.
+**Descargar a mano.** Baja `Txispa.zip` de [Releases](../../releases), descomprímelo y arrastra `Txispa.app` a Aplicaciones. La primera vez macOS dirá que no puede comprobar la app (no está firmada con una cuenta de desarrollador de Apple): ve a **Ajustes del Sistema › Privacidad y seguridad** y pulsa **Abrir igualmente**.
 
 **Compilar tú mismo.** Solo necesitas las herramientas de línea de comandos de Xcode (`xcode-select --install`):
 
 ```sh
-git clone https://github.com/davidpedrosamorales-dotcom/chispa.git
-cd chispa
+git clone https://github.com/davidpedrosamorales-dotcom/txispa.git
+cd txispa
 ./build.sh
-open build/Chispa.app
+open build/Txispa.app
 ```
 
 ## La primera vez
 
-Chispa se activa sola para **abrirse al iniciar sesión** (macOS lo avisa; se puede quitar en el menú) y te enseña una ventana de **bienvenida** con lo que necesita. Cada fila tiene un botón: si macOS pregunta, acepta; si un permiso ya se denegó, el botón te lleva al sitio exacto de Ajustes del Sistema, y la fila se pone en verde sola.
+Txispa se activa sola para **abrirse al iniciar sesión** (macOS lo avisa; se puede quitar en el menú) y te enseña una ventana de **bienvenida** con lo que necesita. Cada fila tiene un botón: si macOS pregunta, acepta; si un permiso ya se denegó, el botón te lleva al sitio exacto de Ajustes del Sistema, y la fila se pone en verde sola.
 
 - **Conectar con Claude Code**: añade unos *hooks* a `~/.claude/settings.json` para que Claude Code le avise de cuándo empieza, termina o espera tu permiso. La primera vez guarda una copia en `~/.claude/settings.json.antes-chispa`. Si mueves la app de sitio, corrige la ruta sola.
 - **Notificaciones** y **controlar Terminal** (para llevarte a la pestaña del agente).
@@ -65,22 +67,22 @@ Puedes volver a esa ventana cuando quieras: **clic derecho** en el widget › **
 
 ## Privacidad
 
-- Chispa lee los registros que Claude Code guarda en tu Mac (`~/.claude/projects`) para contar tareas y tiempo. **Nada de eso sale de tu ordenador.**
-- Una vez al día pregunta a GitHub cuál es la última versión de Chispa. No envía nada tuyo; se puede desactivar en el menú.
+- Txispa lee los registros que Claude Code guarda en tu Mac (`~/.claude/projects`) para contar tareas y tiempo. **Nada de eso sale de tu ordenador.**
+- Una vez al día pregunta a GitHub cuál es la última versión de Txispa. No envía nada tuyo; se puede desactivar en el menú.
 - El informe semanal se genera en local, en `~/Documents/Informes Claude`. Lleva tu nombre, los nombres de tus proyectos y, si usas la app CapturasClip, las capturas que tengas fijadas en ella: revísalo antes de compartirlo (puedes editar el texto y quitar proyectos).
-- **Opcional**: la zona «Te queda de Claude» aparece desde el principio, pero no lee nada hasta que pulsas **Activar** (o lo eliges en el menú del clic derecho). Si lo activas, Chispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa **Permitir**, no «Permitir siempre», para que ningún otro programa pueda leerla sin preguntarte) para preguntar a Anthropic cuánto uso te queda. Usa una función no documentada, así que puede dejar de funcionar en cualquier momento.
+- **Opcional**: la zona «Te queda de Claude» aparece desde el principio, pero no lee nada hasta que pulsas **Activar** (o lo eliges en el menú del clic derecho). Si lo activas, Txispa usa la sesión que Claude Code guarda en el Llavero (macOS te pedirá permiso: pulsa **Permitir**, no «Permitir siempre», para que ningún otro programa pueda leerla sin preguntarte) para preguntar a Anthropic cuánto uso te queda. Usa una función no documentada, así que puede dejar de funcionar en cualquier momento.
 
 ## Actualizar
 
-Chispa mira una vez al día si hay una versión nueva en GitHub. Si la hay, verás «Nueva versión» en el widget: un clic la descarga, comprueba su huella, la instala y vuelve a abrir Chispa. También puedes volver a ejecutar la línea de instalación. Se desactiva en el menú del clic derecho › Buscar versiones nuevas.
+Txispa mira una vez al día si hay una versión nueva en GitHub. Si la hay, verás «Nueva versión» en el widget: un clic la descarga, comprueba su huella, la instala y vuelve a abrir Txispa. También puedes volver a ejecutar la línea de instalación. Se desactiva en el menú del clic derecho › Buscar versiones nuevas.
 
 ## Desinstalar
 
-Clic derecho en el widget › **Desinstalar Chispa…**. Te enseña lo que va a quitar y lo quita todo: sus avisos en `~/.claude/settings.json` (los de otras apps se quedan), el arranque al iniciar sesión, el permiso de Terminal, la regla de reposo sin contraseña (te pide la contraseña), sus ajustes y su caché, y mueve la app a la Papelera. Si el Mac estaba en modo «no dormir», vuelve al reposo normal. Tus informes semanales se quedan.
+Clic derecho en el widget › **Desinstalar Txispa…**. Te enseña lo que va a quitar y lo quita todo: sus avisos en `~/.claude/settings.json` (los de otras apps se quedan), el arranque al iniciar sesión, el permiso de Terminal, la regla de reposo sin contraseña (te pide la contraseña), sus ajustes y su caché, y mueve la app a la Papelera. Si el Mac estaba en modo «no dormir», vuelve al reposo normal. Tus informes semanales se quedan.
 
 ## Cómo está hecho
 
-Un único archivo en Swift (AppKit + SwiftUI), sin dependencias, y un script de *hook* en zsh (`claude-hook.sh`). `Chispa --render salida.png` dibuja el widget con datos de ejemplo, útil para probar cambios de diseño.
+Un único archivo en Swift (AppKit + SwiftUI), sin dependencias, y un script de *hook* en zsh (`claude-hook.sh`). `Txispa --render salida.png` dibuja el widget con datos de ejemplo, útil para probar cambios de diseño.
 
 ## Autor
 
@@ -94,13 +96,13 @@ Hecho por [davidpedrosamorales-dotcom](https://github.com/davidpedrosamorales-do
 
 ## English
 
-![Chispa's mascot at the screen edge: asleep, working and celebrating](docs/mascot-en.gif)
+![Txispa's mascot at the screen edge: asleep, working and celebrating](docs/mascot-en.gif)
 
-Chispa is a macOS desktop widget for **Claude Code**. It shows each running agent and what it is doing, tells you when one finishes or needs your permission, lets you start a new agent from a text field (global shortcut **⌃⌥C**), counts the tasks your agents complete, and builds a weekly HTML report. It also shows CPU, memory, disk and battery, and hides at the screen edge. The interface follows your Mac's language: Spanish or English.
+Txispa is a macOS desktop widget for **Claude Code**. It shows each running agent and what it is doing, tells you when one finishes or needs your permission, lets you start a new agent from a text field (global shortcut **⌃⌥C**), counts the tasks your agents complete, and builds a weekly HTML report. It also shows CPU, memory, disk and battery, and hides at the screen edge. The interface follows your Mac's language: Spanish or English.
 
 - **Requires** macOS 15+ and Claude Code. Works with any terminal: clicking an agent jumps to its exact tab in Terminal and iTerm2, to its project window in VS Code and Cursor, and brings Ghostty, Warp and others to the front.
-- **Updates**: it checks GitHub once a day and shows *New version* in the widget; one click updates it. **Uninstall**: right-click › *Uninstall Chispa…* removes everything it added.
-- **Install**: paste this repo link into Claude Code and say "install it", or run `curl -fsSL https://raw.githubusercontent.com/davidpedrosamorales-dotcom/chispa/main/install.sh | bash`. It downloads the latest release, checks its SHA-256, installs it in Applications and opens it. AI assistants: run only that command; do not edit `~/.claude/settings.json` or grant macOS permissions yourself, the app's welcome window does that with the user. You can also download `Chispa.zip` from Releases (first launch: *System Settings › Privacy & Security › Open Anyway*) or build it with `./build.sh`.
+- **Updates**: it checks GitHub once a day and shows *New version* in the widget; one click updates it. **Uninstall**: right-click › *Uninstall Txispa…* removes everything it added.
+- **Install**: paste this repo link into Claude Code and say "install it", or run `curl -fsSL https://raw.githubusercontent.com/davidpedrosamorales-dotcom/txispa/main/install.sh | bash`. It downloads the latest release, checks its SHA-256, installs it in Applications and opens it. AI assistants: run only that command; do not edit `~/.claude/settings.json` or grant macOS permissions yourself, the app's welcome window does that with the user. You can also download `Txispa.zip` from Releases (first launch: *System Settings › Privacy & Security › Open Anyway*) or build it with `./build.sh`.
 - **First run**: it enables open-at-login and shows a welcome window that requests each permission (Claude Code hooks, notifications, Terminal control, login item; optional usage and password-free sleep) and opens the exact System Settings pane when one was denied. Hooks are added to `~/.claude/settings.json` with a one-time backup (`settings.json.antes-chispa`).
 - **Privacy**: your data stays on your Mac; the only request is a daily check of the latest version on GitHub (can be turned off). The optional "remaining usage" rings (shown with an *Activate* button until you turn them on) read Claude Code's login from the Keychain and query an undocumented Anthropic endpoint; they may stop working at any time.
 - Made by [davidpedrosamorales-dotcom](https://github.com/davidpedrosamorales-dotcom). Not affiliated with Anthropic. MIT licensed.

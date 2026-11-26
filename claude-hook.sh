@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Hook de Claude Code -> estado para el widget Chispa
+# Hook de Claude Code -> estado para el widget Txispa
 # Uso: claude-hook.sh working|done|attention|end   (JSON del hook por stdin)
 # Archivo de estado (una línea por dato): estado · carpeta · terminal · actividad · inicio · pasos · fin · app
 dir="$HOME/Library/Caches/local.chispa/claude"
