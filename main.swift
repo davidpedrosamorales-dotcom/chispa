@@ -3222,6 +3222,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     }
 
     // MARK: Posición y escondido en el borde
+    /// Saca la ventana en el escritorio en el que estás. Aunque esté marcada para todos los escritorios,
+    /// macOS a veces la saca en otro escritorio y no se puede pinchar.
+    func orderFrontOnThisSpace(_ w: NSWindow) {
+        // «Mover al escritorio activo» la trae aquí al sacarla; luego vuelve a estar en todos.
+        let b = w.collectionBehavior
+        w.collectionBehavior = [.moveToActiveSpace, .ignoresCycle, .fullScreenAuxiliary]
+        w.orderFrontRegardless()
+        DispatchQueue.main.async { w.collectionBehavior = b }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.focusLog("en-este-escritorio=\(w.isOnActiveSpace)")
+        }
+    }
+
     func screenFrame() -> NSRect { (NSScreen.screens.first ?? NSScreen.main)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900) }
 
     func clampPosition() {
@@ -3280,12 +3293,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
                 panel.setFrame(f, display: true)
                 view.layoutSubtreeIfNeeded()
                 morph(open: true)
-                panel.orderFrontRegardless()
+                orderFrontOnThisSpace(panel)
             } else if !panel.isVisible {
                 // vuelve a entrar desde el borde
                 var start = f; start.origin.x = screenFrame().minX - f.width - 24
                 panel.setFrame(start, display: false)
-                panel.orderFrontRegardless()
+                orderFrontOnThisSpace(panel)
             }
             if animated {
                 NSAnimationContext.runAnimationGroup { c in
@@ -3304,7 +3317,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if hidden {
             if !tabPanel.isVisible {
                 tabPanel.alphaValue = 0
-                tabPanel.orderFrontRegardless()
+                orderFrontOnThisSpace(tabPanel)
                 DispatchQueue.main.asyncAfter(deadline: .now() + (animated ? 0.33 : 0)) { [weak self] in
                     guard let self, self.autoHide, !self.shown else { return }
                     NSAnimationContext.runAnimationGroup { c in c.duration = 0.06; self.tabPanel.animator().alphaValue = 1 }
