@@ -4,6 +4,7 @@ import SwiftUI
 import IOKit.ps
 import ServiceManagement
 import UserNotifications
+import AVFoundation
 
 let home = FileManager.default.homeDirectoryForCurrentUser
 
@@ -314,28 +315,178 @@ func listProjects() -> [(name: String, url: URL)] {
     return out
 }
 
-func launchClaude(in dir: URL, continueLast: Bool, prompt: String? = nil) {
+func launchClaude(in dir: URL, continueLast: Bool, prompt: String? = nil, plan: Bool = false) {
     try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
     let id = UUID().uuidString
     let f = cacheDir.appendingPathComponent("launch-\(id).command")
-    let q = "'" + dir.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    var cmd = continueLast ? "claude --continue || claude" : "claude"
+    func sq(_ p: String) -> String { "'" + p.replacingOccurrences(of: "'", with: "'\\''") + "'" }
     var pre = ""
-    if let prompt {
-        // La petición viaja en un archivo aparte: así no hay que escaparla dentro del comando
-        let pf = cacheDir.appendingPathComponent("prompt-\(id).txt")
-        guard (try? prompt.write(to: pf, atomically: true, encoding: .utf8)) != nil else { return }
-        let pq = "'" + pf.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        pre = "export WIDGET_PROMPT=\"$(cat \(pq))\"\nrm -f \(pq)\n"
-        cmd = "claude -- \"$WIDGET_PROMPT\""
+    // Los textos viajan en archivos aparte que se leen a variables: así no hay que escaparlos dentro del comando
+    func pass(_ text: String, as name: String) -> Bool {
+        let pf = cacheDir.appendingPathComponent("\(name)-\(id).txt")
+        guard (try? text.write(to: pf, atomically: true, encoding: .utf8)) != nil else { return false }
+        pre += "export \(name)=\"$(cat \(sq(pf.path)))\"\nrm -f \(sq(pf.path))\n"
+        return true
     }
-    let script = "#!/bin/zsh\nrm -f \"$0\"\ncd \(q)\n\(pre)clear\nexec zsh -lic '\(cmd)'\n"
+    var flags = ""
+    // Plan primero: Claude propone un plan y no toca nada hasta que lo apruebes
+    if plan { flags += " --permission-mode plan" }
+    // Petición temporal: Claude lo avisa al empezar (un aviso impreso antes se lo come la pantalla de Claude Code)
+    if let start = requestStart(dir) {
+        let end = shortDate(start.addingTimeInterval(requestLifetime))
+        let note = T("""
+            Esta conversación está en una carpeta de peticiones temporales de Txispa: se moverá a la Papelera el \(end) (30 días desde que empezó). \
+            Empieza tu primera respuesta de esta sesión con esta línea, tal cual, y después atiende la petición con normalidad: \
+            «⏳ Petición temporal: esta carpeta se borrará el \(end). Si quieres continuar en el tiempo, pídeme crear una carpeta nueva para no perder nada.»
+            """, """
+            This conversation is in a Txispa temporary-requests folder: it will be moved to the Trash on \(end) (30 days after it started). \
+            Start your first reply of this session with this line, verbatim, then handle the request normally: \
+            "⏳ Temporary request: this folder will be deleted on \(end). To keep working on it over time, ask me to create a new folder so nothing is lost."
+            """)
+        if pass(note, as: "TXISPA_AVISO") { flags += " --append-system-prompt \"$TXISPA_AVISO\"" }
+    }
+    var cmd = continueLast ? "claude\(flags) --continue || claude\(flags)" : "claude\(flags)"
+    if let prompt {
+        guard pass(prompt, as: "WIDGET_PROMPT") else { return }
+        cmd = "claude\(flags) -- \"$WIDGET_PROMPT\""
+    }
+    let script = "#!/bin/zsh\nrm -f \"$0\"\ncd \(sq(dir.path))\n\(pre)clear\nexec zsh -lic '\(cmd)'\n"
     do {
         try script.write(to: f, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: f.path)
     } catch { return }
     NSWorkspace.shared.open([f], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
                             configuration: NSWorkspace.OpenConfiguration())
+}
+
+// MARK: - Git de cada proyecto (cambios sin commit, commits sin subir)
+struct GitInfo: Equatable { var dirty = 0; var ahead = 0; var branch = "" }
+
+/// Un git de verdad, nunca /usr/bin/git: sin las herramientas de Xcode, ese abre la ventana de instalarlas.
+let gitBinary: String? = ["/opt/homebrew/bin/git", "/usr/local/bin/git",
+                          "/Library/Developer/CommandLineTools/usr/bin/git",
+                          "/Applications/Xcode.app/Contents/Developer/usr/bin/git"].first { FileManager.default.isExecutableFile(atPath: $0) }
+
+/// Estado git de una carpeta, o nil si no es un repositorio. No bloquea el repositorio (--no-optional-locks):
+/// así nunca estorba a un agente que esté haciendo commit en ese momento.
+func readGit(_ dir: String) -> GitInfo? {
+    guard let git = gitBinary, !dir.isEmpty else { return nil }
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: git)
+    p.arguments = ["--no-optional-locks", "-C", dir, "status", "--porcelain=v1", "--branch"]
+    let out = Pipe(), err = Pipe(); p.standardOutput = out; p.standardError = err
+    do { try p.run() } catch { return nil }
+    let killer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+    DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: killer)
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit(); killer.cancel()
+    guard p.terminationStatus == 0, let txt = String(data: data, encoding: .utf8) else { return nil }
+    var g = GitInfo()
+    for line in txt.split(separator: "\n") {
+        if line.hasPrefix("## ") {
+            let head = line.dropFirst(3)
+            g.branch = String(head.split(separator: ".").first ?? "").replacingOccurrences(of: "No commits yet on ", with: "")
+            if let r = head.range(of: "ahead ") {
+                g.ahead = Int(head[r.upperBound...].prefix { $0.isNumber }) ?? 0
+            }
+        } else { g.dirty += 1 }
+    }
+    return g
+}
+
+// MARK: - Peticiones sueltas de la barra (temporales: se borran a los 30 días)
+/// Las peticiones de la barra van a «Nuevas peticiones», dentro de la carpeta de proyectos, cada una en su subcarpeta.
+/// Son temporales: a los 30 días de empezarlas van a la Papelera. Lo que vaya a durar se pasa a una carpeta propia.
+let requestLifetime: TimeInterval = 30 * 86400
+let requestMarker = ".txispa-peticion"        // marca oculta: fecha de inicio (solo se borra lo que la lleva)
+
+func requestsRoot() -> URL {
+    let dir = projectsURL.appendingPathComponent(T("Nuevas peticiones", "New requests"))
+    let fm = FileManager.default
+    try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+    // El CLAUDE.md se escribe si falta o si es uno nuestro de una versión anterior
+    let md = dir.appendingPathComponent("CLAUDE.md")
+    let old = (try? String(contentsOf: md, encoding: .utf8)) ?? ""
+    let ours = old.isEmpty || old.hasPrefix("# Nuevas peticiones") || old.hasPrefix("# New requests")
+    if ours && !old.contains("<!-- txispa:2 -->") {
+        let p = projectsURL.path
+        let text = uiSpanish ? """
+        # Nuevas peticiones
+        <!-- txispa:2 -->
+
+        Aquí llegan las peticiones sueltas que se hacen desde la barra de Txispa, cada una en su subcarpeta.
+
+        **Es temporal: cada petición se mueve a la Papelera a los 30 días de empezarla.** La persona ya lo ve avisado en la terminal.
+
+        - Si es algo rápido (una pregunta, una lista, un archivo suelto), hazlo aquí mismo, en la subcarpeta de esta petición.
+        - Si la petición va a durar o a convertirse en un proyecto, dilo antes de seguir y propón pasarla a una carpeta propia en `\(p)`, con un nombre corto y claro, para no perder nada. Cuando la persona acepte, mueve allí la subcarpeta de esta petición entera (con su nuevo nombre), borra dentro el archivo oculto `\(requestMarker)` (así deja de ser temporal) y dile que siga en esa carpeta (en Txispa: elegirla en el selector de proyecto y pulsar «Seguir» o «Nueva»).
+        - Nunca guardes aquí nada que deba durar.
+        """ : """
+        # New requests
+        <!-- txispa:2 -->
+
+        One-off requests made from Txispa's bar land here, each in its own subfolder.
+
+        **This is temporary: each request is moved to the Trash 30 days after it started.** The person already sees this in the terminal.
+
+        - If it's something quick (a question, a list, a single file), do it right here, in this request's subfolder.
+        - If the request is going to last or grow into a project, say so before continuing and suggest moving it to its own folder in `\(p)`, with a short, clear name, so nothing is lost. Once the person agrees, move this request's whole subfolder there (with its new name), delete the hidden file `\(requestMarker)` inside it (so it's no longer temporary) and tell them to continue there (in Txispa: pick it in the project selector and press “Resume” or “New”).
+        - Never keep anything here that needs to last.
+        """
+        try? text.write(to: md, atomically: true, encoding: .utf8)
+    }
+    return dir
+}
+
+/// Crea la subcarpeta de una petición nueva: «2026-11-27 10.42 primeras palabras».
+func newRequestFolder(for prompt: String) -> URL {
+    let root = requestsRoot()
+    let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH.mm"
+    let words = prompt.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.prefix(6).joined(separator: " ")
+    let slug = String(words.map { "/:\\".contains($0) || $0.isNewline ? " " : $0 }).split(separator: " ").joined(separator: " ").trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+    var name = f.string(from: Date()) + (slug.isEmpty ? "" : " " + String(slug.prefix(40)).trimmingCharacters(in: .whitespaces))
+    var dir = root.appendingPathComponent(name), n = 2
+    while FileManager.default.fileExists(atPath: dir.path) { name += " \(n)"; n += 1; dir = root.appendingPathComponent(name) }
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try? String(Date().timeIntervalSince1970).write(to: dir.appendingPathComponent(requestMarker), atomically: true, encoding: .utf8)
+    return dir
+}
+
+/// Si la carpeta es una petición temporal, cuándo empezó.
+func requestStart(_ dir: URL) -> Date? {
+    guard let t = try? String(contentsOf: dir.appendingPathComponent(requestMarker), encoding: .utf8),
+          let e = Double(t.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+    return Date(timeIntervalSince1970: e)
+}
+
+func shortDate(_ d: Date) -> String {
+    let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .none
+    f.locale = Locale(identifier: uiSpanish ? "es_ES" : "en_US")
+    return f.string(from: d)
+}
+
+/// Repasa las peticiones: avisa 3 días antes y manda a la Papelera las que pasan de 30 días.
+/// Nunca toca una carpeta sin la marca ni una en la que esté trabajando un agente (`busy`).
+func cleanupRequests(busy: Set<String>) {
+    let root = projectsURL.appendingPathComponent(T("Nuevas peticiones", "New requests"))
+    guard isDir(root) else { return }
+    let fm = FileManager.default
+    for dir in sortedSubdirs(root) {
+        guard let start = requestStart(dir) else { continue }
+        if busy.contains(where: { $0 == dir.path || $0.hasPrefix(dir.path + "/") }) { continue }
+        let end = start.addingTimeInterval(requestLifetime)
+        let warned = dir.appendingPathComponent(".txispa-avisada")
+        if Date() >= end {
+            if (try? fm.trashItem(at: dir, resultingItemURL: nil)) != nil {
+                notify(T("Petición temporal en la Papelera", "Temporary request moved to the Trash"),
+                       T("«\(dir.lastPathComponent)» cumplió 30 días. Si la necesitas, sácala de la Papelera.", "“\(dir.lastPathComponent)” reached 30 days. If you need it, restore it from the Trash."))
+            }
+        } else if end.timeIntervalSinceNow < 3 * 86400 && !fm.fileExists(atPath: warned.path) {
+            notify(T("Una petición temporal se borrará pronto", "A temporary request will be deleted soon"),
+                   T("«\(dir.lastPathComponent)» irá a la Papelera el \(shortDate(end)). Si quieres conservarla, pásala a una carpeta propia.", "“\(dir.lastPathComponent)” goes to the Trash on \(shortDate(end)). To keep it, move it to its own folder."))
+            try? "".write(to: warned, atomically: true, encoding: .utf8)
+        }
+    }
 }
 
 // MARK: - Claude: estado (escrito por los hooks de Claude Code)
@@ -994,6 +1145,7 @@ struct AgentVM: Identifiable, Equatable {
     var end: Date?
     var steps: Int
     var tip: String
+    var git: GitInfo? = nil
 }
 
 struct ProjectVM: Identifiable { let id: String; let name: String; let level: Int; let current: Bool; let root: Bool }
@@ -1078,6 +1230,8 @@ final class WidgetModel: ObservableObject {
     var onChooseFolder: (() -> Void)?
     var onEditSelf: (() -> Void)?
     var onAsk: ((String) -> Void)?
+    @Published var planFirst = false       // «Plan primero»: el agente propone un plan y espera tu visto bueno
+    var onPlanFirst: ((Bool) -> Void)?
 }
 
 // MARK: - Interfaz: piezas
@@ -1207,7 +1361,10 @@ struct AgentCard: View {
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(a.name).font(.system(size: 14.5, weight: .semibold)).lineLimit(1)
-                    Text(a.activity).font(.system(size: 11.5)).foregroundColor(.white.opacity(0.58)).lineLimit(1)
+                    HStack(spacing: 5) {
+                        if let g = a.git, g.dirty > 0 || g.ahead > 0 { GitBadge(g: g) }
+                        Text(a.activity).font(.system(size: 11.5)).foregroundColor(.white.opacity(0.58)).lineLimit(1)
+                    }
                 }
                 Spacer(minLength: 6)
                 VStack(alignment: .trailing, spacing: 2) {
@@ -1230,6 +1387,30 @@ struct AgentCard: View {
         .buttonStyle(PressStyle())
         .help(a.tip)
     }
+}
+
+/// «±3 ↑2»: archivos con cambios sin commit y commits sin subir.
+struct GitBadge: View {
+    let g: GitInfo
+    var body: some View {
+        HStack(spacing: 4) {
+            if g.dirty > 0 { Text("±\(g.dirty)") }
+            if g.ahead > 0 { Text("↑\(g.ahead)") }
+        }
+        .font(.system(size: 9.5, weight: .bold, design: .rounded)).monospacedDigit()
+        .foregroundColor(.white.opacity(0.62))
+        .padding(.horizontal, 5).padding(.vertical, 1.5)
+        .background(Capsule().fill(Color.white.opacity(0.09)))
+        .fixedSize()
+    }
+}
+
+func gitTip(_ g: GitInfo) -> String {
+    var parts: [String] = []
+    if g.dirty > 0 { parts.append(g.dirty == 1 ? T("1 archivo con cambios sin commit", "1 file with uncommitted changes") : T("\(g.dirty) archivos con cambios sin commit", "\(g.dirty) files with uncommitted changes")) }
+    if g.ahead > 0 { parts.append(g.ahead == 1 ? T("1 commit sin subir", "1 unpushed commit") : T("\(g.ahead) commits sin subir", "\(g.ahead) unpushed commits")) }
+    if parts.isEmpty { parts.append(T("Todo guardado en git", "Everything committed")) }
+    return (g.branch.isEmpty ? "" : T("Rama \(g.branch): ", "Branch \(g.branch): ")) + parts.joined(separator: " · ")
 }
 
 struct PressStyle: ButtonStyle {
@@ -1876,7 +2057,7 @@ struct WidgetUI: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkle").font(.system(size: 9.5, weight: .bold)).foregroundColor(uiAccent)
-                    Text("CHISPA").font(.system(size: 9.5, weight: .bold)).tracking(1.1).foregroundColor(.white.opacity(0.45))
+                    Text("TXISPA").font(.system(size: 9.5, weight: .bold)).tracking(1.1).foregroundColor(.white.opacity(0.45))
                     if model.presentation {
                         Image(systemName: "eye.slash.fill").font(.system(size: 9.5, weight: .semibold)).foregroundColor(.white.opacity(0.5))
                             .help(T("Modo presentación: los proyectos privados no se muestran", "Presentation mode: private projects are hidden"))
@@ -1989,6 +2170,16 @@ struct WidgetUI: View {
                     .font(.system(size: 13))
                     .onSubmit { send() }
             }
+            Button(action: { model.planFirst.toggle(); model.onPlanFirst?(model.planFirst) }) {
+                Image(systemName: "checklist").font(.system(size: 11, weight: .bold))
+                    .foregroundColor(model.planFirst ? uiAccent : .white.opacity(0.4))
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(model.planFirst ? uiAccent.opacity(0.18) : Color.clear))
+            }
+            .buttonStyle(PressStyle())
+            .help(model.planFirst
+                  ? T("Plan primero: activado. Claude propone un plan y no toca nada hasta que lo apruebes en su ventana; Txispa te avisa cuando esté listo. Pulsa para desactivarlo.", "Plan first: on. Claude proposes a plan and changes nothing until you approve it in its window; Txispa tells you when it's ready. Click to turn it off.")
+                  : T("Plan primero: desactivado. Púlsalo para que Claude te proponga un plan antes de tocar nada.", "Plan first: off. Click it to have Claude propose a plan before changing anything."))
             Button(action: send) {
                 Image(systemName: "arrow.up").font(.system(size: 11, weight: .heavy))
                     .foregroundColor(ready ? .white : .white.opacity(0.35))
@@ -1996,7 +2187,7 @@ struct WidgetUI: View {
                     .background(Circle().fill(ready ? uiAccent : Color.white.opacity(0.09)))
             }
             .buttonStyle(PressStyle())
-            .help(T("Abre un agente nuevo en «\(model.project)» con esta petición (o pulsa Intro). Atajo para escribir aquí: ⌃⌥C", "Opens a new agent in “\(model.project)” with this request (or press Return). Shortcut to type here: ⌃⌥C"))
+            .help(T("Abre un agente nuevo con esta petición en la carpeta «Nuevas peticiones» de tus proyectos (o pulsa Intro). Si crece, Claude te propondrá pasarla a una carpeta propia. Atajo para escribir aquí: ⌃⌥C", "Opens a new agent with this request in the “New requests” folder of your projects (or press Return). If it grows, Claude will suggest moving it to its own folder. Shortcut to type here: ⌃⌥C"))
         }
         .padding(.leading, 12).padding(.trailing, 6).frame(height: 38)
         .background(RoundedRectangle(cornerRadius: 19, style: .continuous).fill(Color.white.opacity(0.09)))
@@ -2351,6 +2542,7 @@ class WidgetView: NSView {
     var onMood: ((String, Int) -> Void)?
     var onSession: ((ClaudeSession?) -> Void)?
     var isSecret: (ClaudeSession) -> Bool = { _ in false }
+    var gitInfo: [String: GitInfo] = [:]     // por carpeta (cwd); lo rellena la app
     var lidText = ""
     private var sessions: [ClaudeSession] = []
     private var lastTopApps = Date.distantPast
@@ -2589,7 +2781,9 @@ class WidgetView: NSView {
             return AgentVM(id: s.id, name: secret ? T("Proyecto privado", "Private project") : s.project, state: s.state,
                            activity: secret || s.activity.isEmpty ? fallback : trActivity(s.activity),
                            start: s.start, end: s.state == "done" ? (s.end ?? s.date) : nil, steps: s.steps,
-                           tip: secret ? T("Clic para ir a su ventana", "Click to go to its window") : T("\(s.cwd)\nClic para ir a su ventana", "\(s.cwd)\nClick to go to its window"))
+                           tip: secret ? T("Clic para ir a su ventana", "Click to go to its window")
+                               : s.cwd + (gitInfo[s.cwd].map { "\n" + gitTip($0) } ?? "") + T("\nClic para ir a su ventana", "\nClick to go to its window"),
+                           git: secret ? nil : gitInfo[s.cwd])
         }
         if vms != model.agents { model.agents = vms }
         let rest = list.dropFirst(maxR)
@@ -2874,6 +3068,22 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     let hideItem = NSMenuItem(title: T("Esconder en el borde izquierdo", "Hide at the left edge"), action: #selector(toggleAutoHide), keyEquivalent: "")
     let presentItem = NSMenuItem(title: T("Modo presentación", "Presentation mode"), action: #selector(togglePresentation), keyEquivalent: "")
     let soundItem = NSMenuItem(title: T("Sonido al terminar una tarea", "Sound when a task finishes"), action: #selector(toggleSound), keyEquivalent: "")
+    let speakItem = NSMenuItem(title: T("Avisos hablados", "Spoken alerts"), action: #selector(toggleSpeak), keyEquivalent: "")
+    let speaker = AVSpeechSynthesizer()
+    var spokenAlerts: Bool {
+        get { UserDefaults.standard.bool(forKey: "spokenAlerts") }
+        set { UserDefaults.standard.set(newValue, forKey: "spokenAlerts") }
+    }
+    /// Lo dice en voz alta con la voz del sistema, en el idioma del Mac.
+    func say(_ text: String) {
+        let u = AVSpeechUtterance(string: text)
+        u.voice = AVSpeechSynthesisVoice(language: uiSpanish ? "es-ES" : "en-US")
+        speaker.speak(u)
+    }
+    // Git de las carpetas de los agentes: se consulta en segundo plano, como mucho cada 15 s por carpeta
+    var gitCache: [String: (info: GitInfo?, at: Date)] = [:]
+    var gitBusy = Set<String>()
+    let gitQueue = DispatchQueue(label: "local.chispa.git", qos: .utility)
     let usageItem = NSMenuItem(title: T("Mostrar lo que te queda de Claude (experimental)", "Show Claude usage left (experimental)"), action: #selector(toggleUsage), keyEquivalent: "")
     var showUsage: Bool {
         get { defaults.bool(forKey: "showUsage") }
@@ -2940,6 +3150,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
     /// Los últimos datos buenos guardados en disco: se enseñan al abrir mientras llega la respuesta nueva.
     lazy var savedUsage: [String: UsageLimit]? = (try? Data(contentsOf: usageCacheFile)).flatMap { parseUsage($0) }
     var lastDiskCheck = Date.distantPast
+    var lastRequestsCleanup = Date.distantPast
     let launchedAt = Date()
     let statsReader = WorkStatsReader()
     var lastStats = Date.distantPast
@@ -3001,12 +3212,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         }
         m.onChooseFolder = { [weak self] in self?.closePicker(); self?.chooseProjectsFolder() }
         m.onEditSelf = { [weak self] in self?.closePicker(); self?.openOwnProject() }
+        m.planFirst = defaults.bool(forKey: "planFirst")
+        m.onPlanFirst = { [weak self] on in self?.defaults.set(on, forKey: "planFirst") }
         m.onAsk = { [weak self] text in
             guard let self else { return }
             self.panel.makeFirstResponder(nil)
-            var url = URL(fileURLWithPath: self.projectPath)
-            if !isDir(url) { url = projectsURL }
-            launchClaude(in: url, continueLast: false, prompt: text)
+            launchClaude(in: newRequestFolder(for: text), continueLast: false, prompt: text, plan: self.view.model.planFirst)
         }
         view.onSession = { [weak self] s in self?.goToTerminal(s) }
         view.isSecret = { [weak self] s in self.map { $0.presentation && $0.isPrivate(s) } ?? false }
@@ -3096,6 +3307,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         soundItem.target = self
         soundItem.state = doneSound ? .on : .off
         menu.insertItem(soundItem, at: 3)
+        speakItem.target = self
+        speakItem.state = spokenAlerts ? .on : .off
+        speakItem.toolTip = T("Dice en voz alta cuándo un agente termina o te necesita", "Says out loud when an agent finishes or needs you")
         usageItem.target = self
         usageItem.state = showUsage ? .on : .off
         menu.insertItem(usageItem, at: 4)
@@ -3104,6 +3318,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         view.model.onUpdate = { [weak self] in self?.runUpdate() }
         menu.insertItem(privateItem, at: 3)
         menu.insertItem(.separator(), at: 4)
+        menu.insertItem(speakItem, at: menu.index(of: soundItem) + 1)   // justo debajo de «Sonido»
         panel.setFrame(targetFrame(), display: false)
         panel.orderFrontRegardless()
         applyAutoHideMode()
@@ -3174,6 +3389,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         view.updateDetails(disabled: disabled, timerEnd: timerEnd, timerMinutes: timerMinutes, battery: bat)
         view.updateSystem()
         if Date().timeIntervalSince(lastDiskCheck) >= 30 { lastDiskCheck = Date(); view.updateDisk() }
+        // Peticiones temporales: repaso a los pocos segundos de abrir y luego cada 6 horas
+        if Date().timeIntervalSince(lastRequestsCleanup) >= 6 * 3600 && Date().timeIntervalSince(launchedAt) > 10 {
+            lastRequestsCleanup = Date()
+            cleanupRequests(busy: Set(lastSessions.filter { $0.state == "working" || $0.state == "attention" }.map(\.cwd)))
+        }
         // Una vez al día (y a los pocos segundos de abrir): ¿hay versión nueva?
         let lastCheck = defaults.double(forKey: "lastUpdateCheck")
         if checkUpdates && Date().timeIntervalSince1970 - lastCheck > 86400 && Date().timeIntervalSince(launchedAt) > 8 {
@@ -3212,8 +3432,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         if claudeInitialized && !terminalFront {
             for s in sessions where prevClaude[s.id] != s.state {
                 let where_ = presentation && isPrivate(s) ? T("un proyecto", "a project") : s.project
-                if s.state == "done" { notify(T("Claude ha terminado", "Claude has finished"), T("En \(where_)", "In \(where_)")) }
-                if s.state == "attention" { notify(T("Claude te necesita", "Claude needs you"), T("Está esperando tu permiso en \(where_)", "It's waiting for your permission in \(where_)")) }
+                if s.state == "done" {
+                    notify(T("Claude ha terminado", "Claude has finished"), T("En \(where_)", "In \(where_)"))
+                    if spokenAlerts { say(T("Claude ha terminado en \(where_)", "Claude has finished in \(where_)")) }
+                }
+                if s.state == "attention" {
+                    notify(T("Claude te necesita", "Claude needs you"), T("Está esperando tu permiso en \(where_)", "It's waiting for your permission in \(where_)"))
+                    if spokenAlerts { say(T("Claude te necesita en \(where_)", "Claude needs you in \(where_)")) }
+                }
             }
         }
         // Escondido, ya no se abre: lo cuenta la mascota de la pestañita
@@ -3227,7 +3453,27 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         }
         prevClaude = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.state) })
         claudeInitialized = true
+        refreshGit(Set(sessions.map(\.cwd)))
+        view.gitInfo = gitCache.compactMapValues { $0.info }
         view.updateClaude(sessions)
+    }
+
+    /// Pide el estado git de las carpetas que lo tengan viejo (más de 15 s) y repinta al llegar.
+    func refreshGit(_ dirs: Set<String>) {
+        gitCache = gitCache.filter { dirs.contains($0.key) }
+        for d in dirs where !d.isEmpty && !gitBusy.contains(d) && Date().timeIntervalSince(gitCache[d]?.at ?? .distantPast) > 15 {
+            gitBusy.insert(d)
+            gitQueue.async { [weak self] in
+                let g = readGit(d)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.gitBusy.remove(d)
+                    let changed = self.gitCache[d]?.info != g
+                    self.gitCache[d] = (g, Date())
+                    if changed { self.view.gitInfo = self.gitCache.compactMapValues { $0.info }; self.view.updateClaude(self.lastSessions) }
+                }
+            }
+        }
     }
 
     // MARK: Posición y escondido en el borde
@@ -3670,6 +3916,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotifi
         try? out.write(to: file, options: .atomic)
     }
 
+    @objc func toggleSpeak() {
+        spokenAlerts.toggle()
+        speakItem.state = spokenAlerts ? .on : .off
+        if spokenAlerts { say(T("Avisos hablados activados", "Spoken alerts on")) }
+    }
+
     @objc func toggleSound() {
         doneSound.toggle()
         soundItem.state = doneSound ? .on : .off
@@ -4072,9 +4324,10 @@ if let i = CommandLine.arguments.firstIndex(of: "--render"), i + 1 < CommandLine
     if scenario != "idle" {
         m.agents = [
             AgentVM(id: "1", name: "web-clientes", state: scenario == "alert" ? "attention" : "working",
-                    activity: scenario == "alert" ? "Espera tu permiso" : "Edición · checkout.tsx", start: now.addingTimeInterval(-161), end: nil, steps: 14, tip: ""),
+                    activity: scenario == "alert" ? "Espera tu permiso" : "Edición · checkout.tsx", start: now.addingTimeInterval(-161), end: nil, steps: 14, tip: "", git: GitInfo(dirty: 3, ahead: 0, branch: "main")),
             AgentVM(id: "2", name: "informes-ventas", state: "working", activity: "Ejecutando las pruebas", start: now.addingTimeInterval(-47), end: nil, steps: 5, tip: ""),
-            AgentVM(id: "3", name: "migracion-datos", state: "done", activity: "Listo para revisar", start: now.addingTimeInterval(-900), end: now.addingTimeInterval(-388), steps: 31, tip: "")]
+            AgentVM(id: "3", name: "migracion-datos", state: "done", activity: "Listo para revisar", start: now.addingTimeInterval(-900), end: now.addingTimeInterval(-388), steps: 31, tip: "", git: GitInfo(dirty: 0, ahead: 2, branch: "main"))]
+        m.planFirst = true
         m.mood = scenario == "alert" ? "att" : "work"
     }
     if scenario == "pick" {
